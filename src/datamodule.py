@@ -68,7 +68,7 @@ class ImageAuthorshipDataModule(LightningDataModule):
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
-            persistent_workers=True,
+            #persistent_workers=True,
         )
 
     def val_dataloader(self):
@@ -76,7 +76,7 @@ class ImageAuthorshipDataModule(LightningDataModule):
             self.val_dataset,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
-            persistent_workers=True,
+            #persistent_workers=True,
         )
 
     def test_dataloader(self):
@@ -84,7 +84,7 @@ class ImageAuthorshipDataModule(LightningDataModule):
             self.test_dataset,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
-            persistent_workers=True,
+            #persistent_workers=True,
         )
 
 

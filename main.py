@@ -13,6 +13,9 @@ from ray.tune import CLIReporter
 import pickle
 from src.centroids import get_centroid_preds
 
+from src.callbacks import EmissionsTrackerCallback
+
+
 args = read_args()
 
 if __name__ == "__main__":
@@ -65,6 +68,8 @@ if __name__ == "__main__":
         )
 
         callbacks = [checkpointing, early_stopping]
+
+    callbacks.append(EmissionsTrackerCallback(log_to_trainer=True))
 
     # Optional CSV logging
     if args.log_to_csv:
