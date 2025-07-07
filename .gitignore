@@ -1,0 +1,36 @@
+# Ignorar cachés de Python
+**/__pycache__/
+
+# Entornos virtuales
+venv310/
+venv39/
+venv_TFG/
+.venv/
+
+# Configuración de editores
+.vscode/
+
+# Directorios de logs y resultados
+lightning_logs/
+tb_logs/
+csv_logs/
+results/
+statistical_tests/
+
+# Carpetas auxiliares
+docs/
+data/
+preds/
+figures/
+
+# Checkpoints y modelos entrenados
+models/
+!src/models/  # No ignorar el src/models (es parte del código)
+
+# Archivos comprimidos
+*.rar
+*.zip
+
+# Archivos grandes o de datos que no quieres subir
+*.csv
+*.txt
