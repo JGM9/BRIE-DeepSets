@@ -33,4 +33,7 @@ models/
 
 # Archivos grandes o de datos que no quieres subir
 *.csv
+
+# Permitir explícitamente el requirements.txt
 *.txt
+!requirements.txt
