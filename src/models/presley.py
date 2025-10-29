@@ -31,8 +31,12 @@ class PRESLEY(MF_ELVis):
         self.user_dropout = Dropout(dropout)
         self.img_dropout = Dropout(dropout)
 
-        xavier_uniform_(self.embedding_block.rho.weight.data, gain=1.0)
-        xavier_uniform_(self.embedding_block.img_fc.weight.data, gain=1.0)
+        if hasattr(self.embedding_block.phi, "weight"):
+            xavier_uniform_(self.embedding_block.phi.weight.data, gain=1.0)
+        if hasattr(self.embedding_block.rho, "weight"):
+            xavier_uniform_(self.embedding_block.rho.weight.data, gain=1.0)
+        #xavier_uniform_(self.embedding_block.u_emb.weight.data, gain=1.0)
+        #xavier_uniform_(self.embedding_block.img_fc.weight.data, gain=1.0)
 
         self.criterion = None  # Just to sanitize
 
@@ -41,6 +45,11 @@ class PRESLEY(MF_ELVis):
 
         pos_preds = self((user_images, user_masks, pos_images), output_logits=True)
         neg_preds = self((user_images, user_masks, neg_images), output_logits=True)
+
+        #users, pos_images, neg_images = batch
+
+        #pos_preds = self((users, pos_images), output_logits=True)
+        #neg_preds = self((users, neg_images), output_logits=True)
 
         loss = bpr_loss(pos_preds, neg_preds)
 
@@ -56,6 +65,10 @@ class PRESLEY(MF_ELVis):
 
         preds = self((user_images, user_masks, images), output_logits=True)
 
+        #users, images, targets, id_tests = batch  
+        
+        #preds = self((users, images), output_logits=True)
+
         self.val_recall.update(preds, targets.long(), id_tests)
         self.val_auc.update(preds, targets.long(), id_tests)
 
@@ -68,6 +81,10 @@ class PRESLEY(MF_ELVis):
         user_images, user_masks, images = x
 
         u_embeddings, img_embeddings = self.embedding_block(user_images, user_masks, images)
+
+        #users, images = x
+
+        #u_embeddings, img_embeddings = self.embedding_block(users, images)
 
         if output_logits:
             u_embeddings = self.user_dropout(u_embeddings)

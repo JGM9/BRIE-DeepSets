@@ -2,7 +2,7 @@ import pickle
 import pandas as pd
 
 # Ruta a tu archivo TRAIN_IMG
-ruta = "C:/Users/Usuario/Desktop/cuarto/2o_cuatrimestre/TFG/BRIE-MASTER/data/london/data_10+10/TRAIN_IMG"
+ruta = "C:/Users/Usuario/Desktop/cuarto/2o_cuatrimestre/TFG/BRIE-MASTER/data/barcelona/data_10+10/TRAIN_IMG"
 
 # Cargar el dataframe
 df = pickle.load(open(ruta, "rb"))

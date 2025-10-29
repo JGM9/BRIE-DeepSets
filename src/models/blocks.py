@@ -46,8 +46,8 @@ class DeepSetEmbeddingBlock(nn.Module):
         super().__init__()  
         self.d = d  # dimensión de salida deseada para los embeddings de usuario
         # MODELO PARA USER
-        self.phi = nn.Identity() #if phi is None else phi  # Si no se proporciona φ (procesa cada imagen), usamos nn.Identity() 
-        self.rho = nn.Linear(1536, d)  # ρ: una capa lineal que lleva el embedding (1536) a dimensión d
+        self.rho = nn.Identity()
+        self.phi = nn.Linear(1536, d) 
 
         # MODELO PARA IMAGEN
         self.img_fc = nn.Linear(1536, d)  # capa lineal para mapear el embedding de la foto objetivo (1536) a dimensión d

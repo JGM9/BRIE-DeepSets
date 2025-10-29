@@ -280,6 +280,7 @@ class TripadvisorImageAuthorshipBPRDataset(TripadvisorImageAuthorshipBCEDataset)
             user_masks = torch.tensor([1]*len(image_ids) + [0]*pad_len, dtype=torch.float32)  # máscara binaria (max_user_images,)
 
             return user_images, user_masks, pos_image, neg_image
+            #return user_id, pos_image, neg_image  
 
 
 
@@ -308,6 +309,7 @@ class TripadvisorImageAuthorshipBPRDataset(TripadvisorImageAuthorshipBCEDataset)
             user_masks = torch.tensor([1]*len(image_ids) + [0]*pad_len, dtype=torch.float32)
 
             return user_images, user_masks, image, target, test_id
+            #return user_id, image, target, test_id
 
 
         # If on test, return samples
@@ -332,6 +334,7 @@ class TripadvisorImageAuthorshipBPRDataset(TripadvisorImageAuthorshipBCEDataset)
             user_masks = torch.tensor([1]*len(image_ids) + [0]*pad_len, dtype=torch.float32)
 
             return user_images, user_masks, image, target
+            #return user_id, image, target
 
 
 
