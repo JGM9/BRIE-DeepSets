@@ -1,49 +1,33 @@
-############################
-# 1. Ignorar TODO por defecto
-############################
+# Ignorar TODO por defecto
 *
 
-############################
-# 2. Excepciones explícitas
-############################
-
-# --- Git base ---
+# Permitir básicos
 !.gitignore
-
-# --- Documentación ---
 !README.md
 !requirements.txt
-
-# --- Python en raíz ---
 !*.py
 
-# --- Carpeta src ---
+# Permitir src y subcarpetas
 !src/
+!src/**/
 !src/**/*.py
 
-############################
-# 3. Limpieza adicional (defensiva)
-############################
+# Ignorar artefactos (aunque estén bajo src)
+src/optimization/tb/
+src/optimization/runs/
 
-# Aunque src esté permitido, ignora basura típica si aparece
-__pycache__/
+# No quieres CSV/YAML
+*.csv
+*.yml
+*.yaml
+
+# Basura python
+**/__pycache__/
 *.pyc
 *.pyo
-*.pyd
 
-# Entornos
+# Entornos y otros
 .venv/
 venv/
 env/
-
-# IDEs
-.vscode/
-.idea/
-
-# Logs y outputs
-*.log
-outputs/
-results/
-checkpoints/
-wandb/
-mlruns/
+.ipynb_checkpoints/
