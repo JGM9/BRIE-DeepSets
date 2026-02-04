@@ -1,0 +1,49 @@
+############################
+# 1. Ignorar TODO por defecto
+############################
+*
+
+############################
+# 2. Excepciones explícitas
+############################
+
+# --- Git base ---
+!.gitignore
+
+# --- Documentación ---
+!README.md
+!requirements.txt
+
+# --- Python en raíz ---
+!*.py
+
+# --- Carpeta src ---
+!src/
+!src/**/*.py
+
+############################
+# 3. Limpieza adicional (defensiva)
+############################
+
+# Aunque src esté permitido, ignora basura típica si aparece
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Entornos
+.venv/
+venv/
+env/
+
+# IDEs
+.vscode/
+.idea/
+
+# Logs y outputs
+*.log
+outputs/
+results/
+checkpoints/
+wandb/
+mlruns/
