@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,8 +21,6 @@ from src.callbacks import EmissionsTrackerCallback
 from src.centroids import get_centroid_preds
 from src.test import test_tripadvisor_authorship_task
 
-
-# python -m src.ablation.run_phi_rho_ablation
 
 # =========================
 # φ / ρ building blocks
@@ -53,7 +52,7 @@ def rho_mlp_2ln_dd(d: int) -> nn.Module:
 
 
 def rho_mlp_2ln_1536d(d: int) -> nn.Module:
-    # Para φ=Identity => pooled es 1536, ρ debe arrancar en 1536→d
+    # Para φ=Identity => pooled queda en 1536, ρ debe arrancar en 1536→d
     return nn.Sequential(
         nn.Linear(1536, d),
         nn.ReLU(inplace=True),
@@ -73,7 +72,7 @@ def rho_linear_1536d(d: int) -> nn.Module:
 def build_variant(variant: str, d: int) -> Tuple[nn.Module, Optional[nn.Module], bool]:
     """
     Returns (phi, rho, ds_no_rho)
-    ds_no_rho=True => DeepSetEmbeddingBlock no aplica rho (skip total).
+    ds_no_rho=True => DeepSetEmbeddingBlock hace skip total de rho.
     """
     v = variant.lower()
 
@@ -105,6 +104,7 @@ def build_variant(variant: str, d: int) -> Tuple[nn.Module, Optional[nn.Module],
 
 
 def sanity_check_shapes(phi: nn.Module, rho: Optional[nn.Module], use_rho: bool, d: int, k: int) -> None:
+    # Check rápido para evitar mismatches evidentes
     with torch.no_grad():
         user_images = torch.zeros(2, k, 1536)
         user_masks = torch.ones(2, k)
@@ -114,26 +114,21 @@ def sanity_check_shapes(phi: nn.Module, rho: Optional[nn.Module], use_rho: bool,
             raise RuntimeError(f"phi output must be (B,K,dim). Got {tuple(phi_x.shape)}")
 
         pooled = (phi_x * user_masks.unsqueeze(-1)).mean(dim=1)
+        out = pooled if (not use_rho) else rho(pooled)  # type: ignore[arg-type]
 
-        out = pooled if not use_rho else rho(pooled)  # type: ignore[arg-type]
         if out.shape[-1] != d:
-            raise RuntimeError(
-                f"Final user embedding dim != d. Got {tuple(out.shape)}, expected last_dim={d}."
-            )
+            raise RuntimeError(f"Final user embedding dim != d. Got {tuple(out.shape)}, expected last_dim={d}.")
 
 
-def pick_ckpt(run_dir: Path, no_validation: bool) -> Path:
-    ckpt_best = run_dir / "checkpoints" / "best.ckpt"
-    ckpt_last = run_dir / "checkpoints" / "last.ckpt"
-    if no_validation:
-        if not ckpt_last.exists():
-            raise FileNotFoundError(f"Missing last checkpoint: {ckpt_last}")
-        return ckpt_last
-    if ckpt_best.exists():
-        return ckpt_best
-    if ckpt_last.exists():
-        return ckpt_last
-    raise FileNotFoundError(f"No checkpoint found in {run_dir / 'checkpoints'}")
+def _copy_ckpt(src_path: str, dst_path: Path) -> Path:
+    if not src_path:
+        raise FileNotFoundError("Lightning did not provide a checkpoint path (empty).")
+    sp = Path(src_path)
+    if not sp.exists():
+        raise FileNotFoundError(f"Checkpoint does not exist: {sp}")
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(sp, dst_path)
+    return dst_path
 
 
 def extract_metric(metrics_dict: Dict[str, Any], model_name: str) -> Dict[str, Optional[float]]:
@@ -149,9 +144,9 @@ def extract_metric(metrics_dict: Dict[str, Any], model_name: str) -> Dict[str, O
         return None
 
     return {
-        "Recall@10": get_any(["recall@10_10plus", "recall@10"]),
-        "NDCG@10": get_any(["ndcg@10_10plus", "ndcg@10"]),
-        "AUC": get_any(["auc_all", "auc", "auc_10plus"]),
+        "MRecall@10": get_any(["recall@10_10plus", "recall@10"]),
+        "MNDCG@10": get_any(["ndcg@10_10plus", "ndcg@10"]),
+        "MAUC": get_any(["auc_all", "auc", "auc_10plus"]),
     }
 
 
@@ -163,11 +158,13 @@ class RunCfg:
     max_user_images: int = 20
     workers: int = 0
 
-    # >>> Para ablación: por defecto TRAIN_DEV + sin validación
+    # Ablación: TRAIN/DEV conjunto + sin validación interna
     use_train_val: bool = True
     no_validation: bool = True
 
     max_epochs: int = 75
+
+    # Solo si activases validación
     patience: int = 10
     min_delta: float = 1e-4
 
@@ -183,30 +180,28 @@ def main():
 
     parser = argparse.ArgumentParser()
 
-    # Defaults = tus mejores HP
+    # Best HPs (default)
     parser.add_argument("--d", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--dropout", type=float, default=0.4)
 
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--city", type=str, default="barcelona")
+    parser.add_argument("--model_name", type=str, default="PRESLEY")
     parser.add_argument("--batch_size", type=int, default=8192)
     parser.add_argument("--max_user_images", type=int, default=20)
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--max_epochs", type=int, default=75)
 
-    # >>> Flags “limpios” para poder cambiarlo si algún día quieres:
-    # Default: use_train_val=True
+    # Defaults como quieres: TRAIN/DEV + no_validation
     parser.add_argument("--use_train_val", dest="use_train_val", action="store_true")
     parser.add_argument("--no_use_train_val", dest="use_train_val", action="store_false")
     parser.set_defaults(use_train_val=True)
 
-    # Default: no_validation=True (sin val, sin early stopping)
     parser.add_argument("--no_validation", dest="no_validation", action="store_true")
     parser.add_argument("--with_validation", dest="no_validation", action="store_false")
     parser.set_defaults(no_validation=True)
 
-    # Estos solo se usan si activas validación
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument("--min_delta", type=float, default=1e-4)
 
@@ -215,11 +210,13 @@ def main():
     parser.add_argument("--limit_val_batches", type=int, default=None)
     parser.add_argument("--limit_test_batches", type=int, default=None)
 
+    # Por defecto EXCLUYE baseline (porque ya lo tienes)
     parser.add_argument(
         "--variants",
         type=str,
-        default="baseline,phi_simple,rho_simple,both_simple,no_rho,no_phi,no_rho_phi_simple,no_phi_rho_simple",
+        default="phi_simple,rho_simple,both_simple,no_rho,no_phi,no_rho_phi_simple,no_phi_rho_simple",
     )
+
     parser.add_argument("--resume", action="store_true", default=True)
     parser.add_argument("--no_resume", action="store_true", default=False)
 
@@ -228,6 +225,7 @@ def main():
 
     cfg = RunCfg(
         city=args.city,
+        model=args.model_name,
         batch_size=args.batch_size,
         max_user_images=args.max_user_images,
         workers=args.workers,
@@ -247,17 +245,23 @@ def main():
     if not variants:
         raise ValueError("No variants provided.")
 
-    ablation_root = Path("runs") / cfg.city / cfg.model / "ablation_phi_rho"
+    # >>> Carpeta como pides:
+    # results/ablation/<city>/<model>/...
+    ablation_root = Path("results") / "ablation" / cfg.city / cfg.model
     ablation_root.mkdir(parents=True, exist_ok=True)
+
+
+    out_csv = ablation_root / "ablation_summary.csv"
+    out_json = ablation_root / "ablation_summary.json"
 
     summary_rows: List[Dict[str, Any]] = []
 
     for variant in variants:
+        # Misma seed para TODAS las variantes => comparabilidad
         pl.seed_everything(cfg.seed, workers=True)
 
         phi, rho, ds_no_rho = build_variant(variant, args.d)
         use_rho = not ds_no_rho
-
         sanity_check_shapes(phi=phi, rho=rho, use_rho=use_rho, d=args.d, k=cfg.max_user_images)
 
         run_id = (
@@ -268,7 +272,8 @@ def main():
             f"__rho{int(use_rho)}__seed{cfg.seed}"
         )
         run_dir = ablation_root / run_id
-        (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
+        ckpt_dir = run_dir / "checkpoints"
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
 
         metrics_path = run_dir / "test_metrics.json"
         failed_flag = run_dir / "_FAILED.txt"
@@ -283,11 +288,20 @@ def main():
                 "d": args.d,
                 "lr": args.lr,
                 "dropout": args.dropout,
+                "phi_cfg": variant,  # placeholder (luego en memoria pones columnas)
+                "rho_cfg": variant,
                 "use_rho": int(use_rho),
                 "status": "skipped(existing)",
             }
             row.update(extract_metric(metrics, cfg.model))
             summary_rows.append(row)
+
+            try:
+                import pandas as pd
+                pd.DataFrame(summary_rows).to_csv(out_csv, index=False, encoding="utf-8")
+            except Exception:
+                with open(out_json, "w", encoding="utf-8") as f:
+                    json.dump(summary_rows, f, indent=2)
             continue
 
         if failed_flag.exists():
@@ -336,18 +350,28 @@ def main():
 
             logger = TensorBoardLogger(save_dir=str(run_dir / "tb"), name="", version="")
 
-            callbacks = []
+            callbacks: List[Any] = []
 
-            # >>> Para ablación (default): sin val ⇒ sin early stopping, guardo last.ckpt
             if cfg.no_validation:
+                # >>> LO QUE TE IMPORTA:
+                # Guardar SIEMPRE "last"
                 ckpt_cb = ModelCheckpoint(
+                    dirpath=str(ckpt_dir),
                     save_last=True,
                     save_top_k=0,
-                    dirpath=str(run_dir / "checkpoints"),
+                    every_n_epochs=1,
                     save_on_train_epoch_end=True,
                 )
                 callbacks.append(ckpt_cb)
             else:
+                ckpt_cb = ModelCheckpoint(
+                    dirpath=str(ckpt_dir),
+                    filename="best",
+                    save_top_k=1,
+                    monitor="val_auc",
+                    mode="max",
+                    save_on_train_epoch_end=False,
+                )
                 early = EarlyStopping(
                     monitor="val_auc",
                     mode="max",
@@ -355,20 +379,12 @@ def main():
                     patience=cfg.patience,
                     check_on_train_epoch_end=False,
                 )
-                ckpt_cb = ModelCheckpoint(
-                    save_top_k=1,
-                    monitor="val_auc",
-                    mode="max",
-                    dirpath=str(run_dir / "checkpoints"),
-                    filename="best",
-                    save_on_train_epoch_end=False,
-                )
                 callbacks.extend([ckpt_cb, early])
 
             callbacks.append(EmissionsTrackerCallback(log_to_trainer=True))
             callbacks.append(LearningRateMonitor(logging_interval="step"))
 
-            trainer_kwargs = dict(
+            trainer_kwargs: Dict[str, Any] = dict(
                 max_epochs=cfg.max_epochs,
                 accelerator="auto",
                 strategy="auto",
@@ -380,7 +396,6 @@ def main():
                 enable_model_summary=True,
                 num_sanity_val_steps=0 if cfg.no_validation else 2,
             )
-
             if cfg.limit_train_batches is not None:
                 trainer_kwargs["limit_train_batches"] = cfg.limit_train_batches
             if cfg.limit_val_batches is not None:
@@ -400,8 +415,18 @@ def main():
 
             trainer.fit(model=model, datamodule=dm)
 
-            ckpt_path = pick_ckpt(run_dir, cfg.no_validation)
+            # =========================
+            # CHECKPOINT (no_validation)
+            # =========================
+            # Lightning puede dejarlo como last.ckpt o last-v1.ckpt. No nos fiamos del nombre.
+            # Cogemos el path REAL y lo copiamos a checkpoints/last.ckpt (estable).
+            last_real = getattr(ckpt_cb, "last_model_path", "")
+            stable_last = ckpt_dir / "last.ckpt"
+            ckpt_path = _copy_ckpt(last_real, stable_last)
 
+            # =========================
+            # EVAL (cargar last.ckpt)
+            # =========================
             phi2, rho2, ds_no_rho2 = build_variant(variant, args.d)
             model_eval = PRESLEY(
                 d=args.d,
@@ -430,9 +455,13 @@ def main():
                 logger=False,
                 enable_progress_bar=False,
             )
-            test_preds = torch.cat(pred_trainer.predict(model=model_eval, datamodule=dm))
-            test_preds = test_preds.detach().cpu().numpy()
 
+            preds_list = pred_trainer.predict(model=model_eval, datamodule=dm)
+            if not isinstance(preds_list, list) or len(preds_list) == 0:
+                raise RuntimeError("predict() returned empty outputs.")
+            test_preds = torch.cat([p.detach().cpu() for p in preds_list], dim=0).numpy()
+
+            # Baselines reproducibles
             torch.manual_seed(cfg.seed)
             rnd = torch.mean(torch.rand((len(dm.test_dataset), 10)), dim=1).cpu().numpy()
 
@@ -476,7 +505,7 @@ def main():
                 "lr": args.lr,
                 "dropout": args.dropout,
                 "use_rho": int(use_rho),
-                "ckpt": str(ckpt_path),
+                "ckpt_used": str(ckpt_path),
                 "wall_time_s": round(dt, 2),
                 "status": "ok",
             }
@@ -511,15 +540,15 @@ def main():
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        out_csv = ablation_root / "ablation_summary.csv"
+        # Dump incremental
         try:
             import pandas as pd
             pd.DataFrame(summary_rows).to_csv(out_csv, index=False, encoding="utf-8")
         except Exception:
-            with open(ablation_root / "ablation_summary.json", "w", encoding="utf-8") as f:
+            with open(out_json, "w", encoding="utf-8") as f:
                 json.dump(summary_rows, f, indent=2)
 
-    print(f"[DONE] Summary saved in: {ablation_root / 'ablation_summary.csv'}")
+    print(f"[DONE] Summary saved in: {out_csv}")
 
 
 if __name__ == "__main__":

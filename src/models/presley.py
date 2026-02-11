@@ -102,10 +102,8 @@ class PRESLEY(MF_ELVis):
         pos_img_embeddings = self.img_dropout(pos_img_embeddings)
         neg_img_embeddings = self.img_dropout(neg_img_embeddings)
 
-        scale = math.sqrt(self.embedding_block.d)
-
-        pos_preds = torch.sum(u_embeddings * pos_img_embeddings, dim=-1) / scale
-        neg_preds = torch.sum(u_embeddings * neg_img_embeddings, dim=-1) / scale
+        pos_preds = torch.sum(u_embeddings * pos_img_embeddings, dim=-1)
+        neg_preds = torch.sum(u_embeddings * neg_img_embeddings, dim=-1)
 
         diff = pos_preds - neg_preds
 
@@ -167,8 +165,7 @@ class PRESLEY(MF_ELVis):
             img_embeddings = self.img_dropout(img_embeddings)
 
         # Using dim=-1 to support forward of batches and single samples
-        scale = math.sqrt(self.embedding_block.d)
-        preds = torch.sum(u_embeddings * img_embeddings, dim=-1) / scale
+        preds = torch.sum(u_embeddings * img_embeddings, dim=-1)
 
         if not output_logits:
             preds = torch.sigmoid(preds)
