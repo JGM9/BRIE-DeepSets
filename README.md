@@ -1,7 +1,7 @@
 # BRIE-DeepSets: Scalable User Representation with Deep Sets for Visual Explainability
 
 **Authors (original BRIE):**  
-Jorge Paz-Ruza*, Amparo Alonso-Betanzos  
+Jorge Paz-Ruza, Amparo Alonso-Betanzos  
 Berta Guijarro-Berdiñas, Brais Cancela, Carlos Eiras-Franco  
 
 **Extension and implementation:**  
@@ -161,46 +161,98 @@ To see the full and up-to-date list of command-line options and their default va
 python main.py --help
 ```
 
-## 6. Results
+# 6. Results
 
-### Gijón and Barcelona
-
-| Model | MRecall@10 | MNDCG@10 | MAUC | | MRecall@10 | MNDCG@10 | MAUC |
-|------|------------|----------|------|--|------------|----------|------|
-| RND | 0.373 | 0.185 | 0.487 | | 0.409 | 0.186 | 0.502 |
-| CNT | 0.464 | 0.218 | 0.546 | | 0.443 | 0.219 | 0.554 |
-| ELVis | 0.521 | 0.262 | 0.596 | | 0.597 | 0.327 | 0.631 |
-| MF-ELVis | 0.538 | 0.285 | 0.592 | | 0.557 | 0.293 | 0.596 |
-| **BRIE** | **0.607** | **0.333** | **0.643** | | **0.630** | **0.368** | **0.663** |
-| BRIE+DeepSets | 0.571 | 0.303 | 0.635 | | 0.610 | 0.343 | 0.658 |
+Below we report test results across six cities.  
+For each dataset, the best result is shown in **bold** and the second best in _italics_.
 
 ---
 
-### Madrid and New York
+## Gijón
 
-| Model | MRecall@10 | MNDCG@10 | MAUC | | MRecall@10 | MNDCG@10 | MAUC |
-|------|------------|----------|------|--|------------|----------|------|
-| RND | 0.374 | 0.171 | 0.499 | | 0.374 | 0.168 | 0.502 |
-| CNT | 0.420 | 0.203 | 0.557 | | 0.431 | 0.217 | 0.563 |
-| ELVis | 0.572 | 0.314 | 0.638 | | 0.553 | 0.304 | 0.637 |
-| MF-ELVis | 0.528 | 0.279 | 0.601 | | 0.516 | 0.276 | 0.602 |
-| **BRIE** | **0.612** | **0.348** | **0.673** | | **0.598** | **0.341** | **0.677** |
-| BRIE+DeepSets | 0.597 | 0.338 | 0.668 | | 0.577 | 0.328 | 0.672 |
+| Model | Params | MRecall@10 | MNDCG@10 | MAUC |
+|-------|--------|------------|----------|------|
+| RND | – | 0.373 | 0.185 | 0.487 |
+| CNT | – | 0.464 | 0.218 | 0.546 |
+| ELVis | 435,585 | 0.521 | 0.262 | 0.596 |
+| MF-ELVis | 427,264 | 0.538 | 0.285 | 0.592 |
+| **BRIE** | 427,264 | **0.607** | **0.333** | **0.643** |
+| BRIE+DeepSets | 209,472 | _0.571_ | _0.303_ | _0.635_ |
+
+---
+
+## Barcelona
+
+| Model | Params | MRecall@10 | MNDCG@10 | MAUC |
+|-------|--------|------------|----------|------|
+| RND | – | 0.409 | 0.186 | 0.502 |
+| CNT | – | 0.443 | 0.219 | 0.554 |
+| ELVis | 2,253,057 | 0.597 | 0.327 | 0.631 |
+| MF-ELVis | 2,244,736 | 0.557 | 0.293 | 0.596 |
+| **BRIE** | 2,244,736 | **0.630** | **0.368** | **0.663** |
+| BRIE+DeepSets | 209,472 | _0.610_ | _0.343_ | _0.658_ |
 
 ---
 
-### Paris and London
+## Madrid
 
-| Model | MRecall@10 | MNDCG@10 | MAUC | | MRecall@10 | MNDCG@10 | MAUC |
-|------|------------|----------|------|--|------------|----------|------|
-| RND | 0.459 | 0.209 | 0.502 | | 0.342 | 0.155 | 0.500 |
-| CNT | 0.499 | 0.245 | 0.557 | | 0.400 | 0.200 | 0.562 |
-| ELVis | 0.643 | 0.352 | 0.630 | | 0.530 | 0.293 | 0.629 |
-| MF-ELVis | 0.606 | 0.323 | 0.596 | | 0.531 | 0.267 | 0.597 |
-| **BRIE** | **0.669** | **0.391** | **0.666** | | **0.563** | **0.318** | **0.665** |
-| BRIE+DeepSets | 0.661 | 0.375 | 0.661 | | 0.549 | 0.312 | 0.663 |
+| Model | Params | MRecall@10 | MNDCG@10 | MAUC |
+|-------|--------|------------|----------|------|
+| RND | – | 0.374 | 0.171 | 0.499 |
+| CNT | – | 0.420 | 0.203 | 0.557 |
+| ELVis | 2,948,609 | 0.572 | 0.314 | 0.638 |
+| MF-ELVis | 2,940,288 | 0.528 | 0.279 | 0.601 |
+| **BRIE** | 2,940,288 | **0.612** | **0.348** | **0.673** |
+| BRIE+DeepSets | 209,472 | _0.597_ | _0.338_ | _0.668_ |
 
 ---
+
+## New York
+
+| Model | Params | MRecall@10 | MNDCG@10 | MAUC |
+|-------|--------|------------|----------|------|
+| RND | – | 0.374 | 0.168 | 0.502 |
+| CNT | – | 0.431 | 0.217 | 0.563 |
+| ELVis | 3,377,665 | 0.553 | 0.304 | 0.637 |
+| MF-ELVis | 3,369,344 | 0.516 | 0.276 | 0.602 |
+| **BRIE** | 3,369,344 | **0.598** | **0.341** | **0.677** |
+| BRIE+DeepSets | 209,472 | _0.577_ | _0.328_ | _0.672_ |
+
+---
+
+## Paris
+
+| Model | Params | MRecall@10 | MNDCG@10 | MAUC |
+|-------|--------|------------|----------|------|
+| RND | – | 0.459 | 0.209 | 0.502 |
+| CNT | – | 0.499 | 0.245 | 0.557 |
+| ELVis | 3,064,257 | 0.643 | 0.352 | 0.630 |
+| MF-ELVis | 3,055,936 | 0.606 | 0.323 | 0.596 |
+| **BRIE** | 3,055,936 | **0.669** | **0.391** | **0.666** |
+| BRIE+DeepSets | 209,472 | _0.661_ | _0.375_ | _0.661_ |
+
+---
+
+## London
+
+| Model | Params | MRecall@10 | MNDCG@10 | MAUC |
+|-------|--------|------------|----------|------|
+| RND | – | 0.342 | 0.155 | 0.500 |
+| CNT | – | 0.400 | 0.200 | 0.562 |
+| ELVis | 873,913 | 0.530 | 0.293 | 0.629 |
+| MF-ELVis | 872,592 | 0.531 | 0.267 | 0.597 |
+| **BRIE** | 872,592 | **0.563** | **0.318** | **0.665** |
+| BRIE+DeepSets | 209,472 | _0.549_ | _0.312_ | _0.663_ |
+
+---
+
+## Observations
+
+- **BRIE+DeepSets drastically reduces the number of parameters**, especially in large datasets.
+- Despite removing user-ID embeddings, ranking performance remains highly competitive.
+- The performance gap remains consistently small across all cities.
+- The number of parameters in BRIE+DeepSets is independent of the number of users, improving scalability in dynamic environments.
+
 
 ## 7. Relationship to BRIE
 
