@@ -28,10 +28,8 @@ class BaseModelForImageAuthorship(pl.LightningModule):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         user_images, user_masks, images, _ = batch
-        #users, images, _ = batch
-        #return self((users, images))
         return self((user_images, user_masks, images))
-    
+
     def on_test_epoch_end(self) -> None:
         return
 

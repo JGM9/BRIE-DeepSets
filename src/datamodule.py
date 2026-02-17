@@ -15,6 +15,10 @@ import json
 
 # City-wise Datamodule, contains the image embeddings (common to all partitions)
 # and all the required partitions (train, train+val, val, test)
+#
+# In the Deep Sets variant, users are represented as a permutation-invariant set
+# of image embeddings (up to K images) plus a binary mask that indicates which
+# entries are real images and which are padding.
 
 
 class ImageAuthorshipDataModule(LightningDataModule):
@@ -35,50 +39,73 @@ class ImageAuthorshipDataModule(LightningDataModule):
         self.city = city
         self.batch_size = batch_size
         self.num_workers = num_workers
+
+        # Dataset class depends on the model family:
+        # - MF_ELVis / ELVis -> BCE dataset
+        # - PRESLEY          -> BPR dataset
+        # - COLLEI           -> Contrastive dataset
         self.dataset_class = (
             TripadvisorImageAuthorshipBCEDataset
             if dataset_class is None
             else dataset_class
         )
+
+        # If True, TRAIN_DEV is used as training set (instead of TRAIN).
         self.use_train_val = use_train_val
+
+        # Data root directory (defaults to ./data)
         self.data_dir = Path(data_dir).expanduser() if data_dir is not None else Path("data")
+
+        # Optional: limit to a fixed subset of users (useful for fast ablations / debugging)
         self.limit_users = limit_users
         self.user_subset_ids = None
+
+        # Deep Sets: maximum number of images used to represent a user (K)
         self.max_user_images = max_user_images
+
+        # Model name stored for logging / debugging if needed
         self.model_name = model_name
+
+        # If True, skip validation set creation and val dataloader
         self.no_validation = no_validation
 
     def _build_user_history(self, partition_name: str):
+        # Build user -> list[image_id] mapping from the selected partition.
+        # Only positive samples are kept (take == 1), and duplicates are removed.
         partition_path = self.data_dir / self.city / "data_10+10" / f"{partition_name}_IMG"
         with partition_path.open("rb") as fp:
             df = pickle.load(fp)
 
-        # respeta subset si existe
+        # Keep only the selected subset of users (if any)
         if self.user_subset_ids is not None:
             df = df[df["id_user"].isin(self.user_subset_ids)].reset_index(drop=True)
 
-        take_col = "take"  # en TRAIN/TRAIN_DEV es "take"
+        take_col = "take"  # in TRAIN/TRAIN_DEV label column is "take"
         pos = (
             df[df[take_col] == 1]
-            .drop_duplicates(subset=["id_user", "id_img"])   # <-- clave
+            .drop_duplicates(subset=["id_user", "id_img"])   # avoid repeated (user, img)
             .sort_values(["id_user", "id_img"])
         )
 
+        # Mapping {id_user: [id_img1, id_img2, ...]}
         user_to_ids = pos.groupby("id_user")["id_img"].apply(list).to_dict()
 
         return user_to_ids
 
     def setup(self, stage=None):
+        # Make setup idempotent: Lightning may call it more than once.
         if getattr(self, "_is_setup_done", False):
             return
         self._is_setup_done = True
 
+        # Load precomputed image embeddings (IMG_VEC): shape (num_images, 1536)
         embeddings_path = (
             self.data_dir / self.city / "data_10+10" / "IMG_VEC"
         )
         with embeddings_path.open("rb") as fp:
             self.image_embeddings = Tensor(pickle.load(fp))
 
+        # If requested, compute/load a fixed subset of users for the experiment
         if self.limit_users:
             loaded = self._load_user_subset()
 
@@ -88,17 +115,21 @@ class ImageAuthorshipDataModule(LightningDataModule):
                 self.user_subset_ids = self._compute_user_subset()
                 self._save_user_subset(self.user_subset_ids)
 
-        # construir historial de usuario DESDE TRAIN (o TRAIN_DEV)
-        self.user_to_image_ids_train = self._build_user_history(partition_name="TRAIN" if not self.use_train_val else "TRAIN_DEV")
+        # Deep Sets: build user history strictly from TRAIN (or TRAIN_DEV if use_train_val)
+        # This avoids leakage from DEV/TEST when constructing the user representation.
+        self.user_to_image_ids_train = self._build_user_history(
+            partition_name="TRAIN" if not self.use_train_val else "TRAIN_DEV"
+        )
         lens = pd.Series([len(v) for v in self.user_to_image_ids_train.values()])
         # print("[HIST] n_users:", len(lens))
         # print("[HIST] min/median/mean/max:", lens.min(), lens.median(), lens.mean(), lens.max())
         # print("[HIST] <=1:", (lens <= 1).mean(), " <=5:", (lens <= 5).mean(), " <=10:", (lens <= 10).mean())
 
-
+        # Partitions
         self.train_dataset = self._get_dataset("TRAIN" if not self.use_train_val else "TRAIN_DEV")
         self.train_val_dataset = self._get_dataset("TRAIN_DEV")
-        
+
+        # Validation can be disabled (train-only runs)
         if self.no_validation:
             self.val_dataset = None
         else:
@@ -115,6 +146,7 @@ class ImageAuthorshipDataModule(LightningDataModule):
         self.nusers = self.train_dataset.nusers
 
     def _get_dataset(self, set_name, set_type="train"):
+        # Factory for datasets; dataset_class is injected from utils.get_dataset_constructor(...)
         return self.dataset_class(
             datamodule=self,
             city=self.city,
@@ -124,23 +156,24 @@ class ImageAuthorshipDataModule(LightningDataModule):
         )
 
     def _compute_user_subset(self):
+        # Compute a deterministic subset of users based on number of positive samples in TRAIN/TRAIN_DEV.
         partition_name = "TRAIN" if not self.use_train_val else "TRAIN_DEV"
         partition_path = self.data_dir / self.city / "data_10+10" / f"{partition_name}_IMG"
         with partition_path.open("rb") as fp:
             df = pickle.load(fp)
 
-        take_col = "take"  # en TRAIN/TRAIN_DEV es take
+        take_col = "take"  # in TRAIN/TRAIN_DEV label column is take
         pos = df[df[take_col] == 1]
 
         counts = pos.groupby("id_user").size().sort_values(ascending=False)
 
-        min_pos = 10  # pon 10 (o 5 si te quedas sin users)
+        # Minimum number of positive samples to be eligible
+        min_pos = 10  # set to 5 if you run out of users
         eligible = counts[counts >= min_pos].index.to_list()
 
         subset = eligible[: self.limit_users]
         # print(f"Limiting to {len(subset)} users with >= {min_pos} positives (requested {self.limit_users})")
         return subset
-
 
     def train_dataloader(self):
         return DataLoader(
@@ -152,6 +185,7 @@ class ImageAuthorshipDataModule(LightningDataModule):
         )
 
     def val_dataloader(self):
+        # Lightning expects either a DataLoader or an empty list (to disable validation).
         if self.no_validation:
             return []
         return DataLoader(
@@ -160,7 +194,6 @@ class ImageAuthorshipDataModule(LightningDataModule):
             num_workers=self.num_workers,
         )
 
-
     def test_dataloader(self):
         return DataLoader(
             self.test_dataset,
@@ -168,10 +201,10 @@ class ImageAuthorshipDataModule(LightningDataModule):
             num_workers=self.num_workers,
             #persistent_workers=True,
         )
-    
+
     def _subset_path(self):
-        # Guardar por ciudad + modo de partición + limit_users
-        # (si quieres separar por modelo, mira la opción B más abajo)
+        # Cache file for the selected subset of users (reproducible experiment runs).
+        # Stored by city and training split mode.
         fname = f"user_subset_{self.limit_users}_trainval_{int(self.use_train_val)}.json"
         return os.path.join("models", self.city, fname)
 
@@ -190,10 +223,10 @@ class ImageAuthorshipDataModule(LightningDataModule):
             # print(f"[SUBSET] loaded {len(user_ids)} users <- {path}")
             return set(map(int, user_ids))
         return None
-    def predict_dataloader(self):
-        # En tu caso, quieres predecir sobre TEST
-        return self.test_dataloader()
 
+    def predict_dataloader(self):
+        # In this project, predictions are computed over TEST by default.
+        return self.test_dataloader()
 
 
 # Dataset to train with BCE criterion
@@ -213,7 +246,9 @@ class TripadvisorImageAuthorshipBCEDataset(Dataset):
         self.partition_name = partition_name
         self.user_subset_ids = user_subset_ids
 
-        # Name of the column that indicates sample label varies between partitions
+        # Name of the column that indicates sample label varies between partitions:
+        # - TRAIN / TRAIN_DEV -> "take"
+        # - DEV / TEST        -> "is_dev"
         self.takeordev = "is_dev" if partition_name in ["DEV", "TEST"] else "take"
 
         partition_path = (
@@ -225,6 +260,7 @@ class TripadvisorImageAuthorshipBCEDataset(Dataset):
         with partition_path.open("rb") as fp:
             self.dataframe = pickle.load(fp)
 
+        # Apply subset restriction if enabled
         if self.user_subset_ids is not None:
             self.dataframe = self.dataframe[
                 self.dataframe["id_user"].isin(self.user_subset_ids)
@@ -240,6 +276,9 @@ class TripadvisorImageAuthorshipBCEDataset(Dataset):
         return len(self.dataframe)
 
     def __getitem__(self, idx):
+        # Sample format:
+        # - train/test      -> (user_id, image_embedding, target)
+        # - validation      -> (user_id, image_embedding, target, id_test)
         user_id = self.dataframe.at[idx, "id_user"]
         image_id = self.dataframe.at[idx, "id_img"]
         image = self.datamodule.image_embeddings[image_id]
@@ -262,7 +301,7 @@ class TripadvisorImageAuthorshipBPRDataset(TripadvisorImageAuthorshipBCEDataset)
         self.max_user_images = getattr(self.datamodule, "max_user_images", 20)
         self.embedding_dim = int(self.datamodule.image_embeddings.shape[1])
 
-        # SOLO construir BPR dataframe en TRAIN
+        # Only build BPR triplets for TRAIN
         if self.set_type == "train":
             self._setup_bpr_dataframe()
 
@@ -271,7 +310,7 @@ class TripadvisorImageAuthorshipBPRDataset(TripadvisorImageAuthorshipBCEDataset)
         # Separate between positive and negative samples
         self.positive_samples = (
             self.dataframe[self.dataframe[self.takeordev] == 1]
-            .drop_duplicates(subset=["id_user", "id_img"]) 
+            .drop_duplicates(subset=["id_user", "id_img"])
             .sort_values(["id_user", "id_img"])
             .rename(columns={"id_img": "id_pos_img"})
             .reset_index(drop=True)
@@ -279,12 +318,12 @@ class TripadvisorImageAuthorshipBPRDataset(TripadvisorImageAuthorshipBCEDataset)
         # self.positive_samples = self.positive_samples.drop_duplicates(
         #     keep='first').reset_index(drop=True)
 
+        # Initialize neg sampling for this epoch
         self._resample_dataframe()
 
         # print("[BPR] positives:", len(self.positive_samples))
         # print("[BPR] bpr_dataframe:", len(self.bpr_dataframe))
         # print("[BPR] batches/epoch:", int(np.ceil(len(self.bpr_dataframe) / self.datamodule.batch_size)))
-
 
         # Diccionario: {user_id: [img_id1, img_id2, ..., img_idN]} y ordenado
         # self.user_to_image_ids = (
@@ -299,12 +338,16 @@ class TripadvisorImageAuthorshipBPRDataset(TripadvisorImageAuthorshipBCEDataset)
         # print("DEBUG hist_train user", u, "n_ids", len(hist[u]))
 
     def _resample_dataframe(self):
+        # Resample negative images for each (user, pos_img) to avoid overfitting.
+        # Two kinds of negatives are used:
+        # - different restaurant
+        # - same restaurant (when possible)
         num_samples = len(self.positive_samples)
 
         same_res_bpr_samples = self.positive_samples.copy()
         different_res_bpr_samples = self.positive_samples.copy()
 
-        # 1. Select 10 images not from U and not from the same restaurant
+        # 1. Select images not from U and not from the same restaurant
         user_ids = self.positive_samples["id_user"].to_numpy()[:, None]
         img_ids = self.positive_samples["id_pos_img"].to_numpy()[:, None]
         rest_ids = self.positive_samples["id_restaurant"].to_numpy()[:, None]
@@ -320,8 +363,8 @@ class TripadvisorImageAuthorshipBPRDataset(TripadvisorImageAuthorshipBCEDataset)
             )
         )
         while num_invalid_samples > 0:
-            # Resample again the neg images for those samples, until all are valid,
-            # meaning that user(pos_img(sample)) =/= user(neg_img(sample))
+            # Resample again the neg images for those samples until all are valid:
+            # user(pos_img) != user(neg_img) and restaurant(pos_img) != restaurant(neg_img)
             new_negatives[
                 np.where(
                     (
@@ -341,9 +384,9 @@ class TripadvisorImageAuthorshipBPRDataset(TripadvisorImageAuthorshipBCEDataset)
         # Assign as new neg imgs the img_ids of the selected neg_imgs
         different_res_bpr_samples["id_neg_img"] = img_ids[new_negatives].squeeze(1)
 
-        # 1. Select 10 images not from U but from the same restaurant as the positive
+        # 2. Select images not from U but from the same restaurant as the positive
         def obtain_samerest_samples(rest):
-            # Works the same way as the previous algorithm, but only restaurant-wise
+            # Restaurant-wise resampling (ensures different users inside the same restaurant group).
             user_ids = rest["id_user"].to_numpy()[:, None]
             img_ids = rest["id_pos_img"].to_numpy()[:, None]
 
@@ -359,8 +402,7 @@ class TripadvisorImageAuthorshipBPRDataset(TripadvisorImageAuthorshipBCEDataset)
 
             return rest
 
-        # Can't select "same restaurant" negative samples if all that restaurant's photos
-        # are by the same user
+        # Can't select "same restaurant" negatives if all photos of that restaurant are by the same user
         same_res_bpr_samples = (
             same_res_bpr_samples.groupby("id_restaurant")
             .filter(lambda g: g["id_user"].nunique() > 1)
@@ -372,6 +414,7 @@ class TripadvisorImageAuthorshipBPRDataset(TripadvisorImageAuthorshipBCEDataset)
             .reset_index(drop=True)
         )
 
+        # Final BPR dataframe (concatenate both negative strategies)
         self.bpr_dataframe = pd.concat(
             [different_res_bpr_samples, same_res_bpr_samples], axis=0, ignore_index=True
         )
@@ -388,16 +431,15 @@ class TripadvisorImageAuthorshipBPRDataset(TripadvisorImageAuthorshipBCEDataset)
             neg_image_id = int(self.bpr_dataframe.at[idx, "id_neg_img"])
             pos_image_id = int(self.bpr_dataframe.at[idx, "id_pos_img"])
 
-            # Embeddings de las imágenes positiva y negativa (1536,)
+            # Positive and negative image embeddings (1536,)
             pos_image = self.datamodule.image_embeddings[pos_image_id]
             neg_image = self.datamodule.image_embeddings[neg_image_id]
 
-            # Representación del usuario
+            # Deep Sets: build (K, 1536) user set + (K,) mask from TRAIN history
             user_images, user_masks = self._build_user_representation(user_id, exclude_id=pos_image_id)
 
             return user_images, user_masks, pos_image, neg_image
             #return user_id, pos_image, neg_image  
-
 
         # If on validation, return samples
         # The test_id is needed to compute the validation recall or AUC
@@ -411,12 +453,11 @@ class TripadvisorImageAuthorshipBPRDataset(TripadvisorImageAuthorshipBCEDataset)
             target = float(self.dataframe.at[idx, self.takeordev])
             test_id = self.dataframe.at[idx, "id_test"]
 
-            # Representación del usuario
+            # Deep Sets: build user representation excluding the evaluated image_id
             user_images, user_masks = self._build_user_representation(user_id, exclude_id=image_id)
 
             return user_images, user_masks, image, target, test_id
             #return user_id, image, target, test_id
-
 
         # If on test, return samples
         elif self.set_type == "test":
@@ -427,14 +468,15 @@ class TripadvisorImageAuthorshipBPRDataset(TripadvisorImageAuthorshipBCEDataset)
 
             target = float(self.dataframe.at[idx, self.takeordev])
 
-            # Representación del usuario
+            # Deep Sets: build user representation excluding the evaluated image_id
             user_images, user_masks = self._build_user_representation(user_id, exclude_id=image_id)
 
             return user_images, user_masks, image, target
             #return user_id, image, target
 
-
     def _build_user_representation(self, user_id, exclude_id=None): # ONLY FOR DEEPSETS
+        # Build a fixed-size set of user images (K, 1536) plus a mask (K,).
+        # The user history is taken from TRAIN (or TRAIN_DEV if use_train_val).
         hist = self.datamodule.user_to_image_ids_train.get(user_id, []) # historial solo de TRAIN para ese usuario. Si no existe, []
 
         # 1) Construyo hist_excl 
@@ -470,7 +512,7 @@ class TripadvisorImageAuthorshipBPRDataset(TripadvisorImageAuthorshipBCEDataset)
         else: # para VAL/TEST: determinista (primeras K) para estabilidad de métrica
             image_ids = hist_excl[: self.max_user_images]
 
-        # Preparo el padding para crear los tensores con mismo dtype/device.
+        # Prepare padding tensors with the same dtype/device as the stored embeddings.
         embeddings = self.datamodule.image_embeddings
         dtype = embeddings.dtype
         device = embeddings.device
@@ -493,7 +535,6 @@ class TripadvisorImageAuthorshipBPRDataset(TripadvisorImageAuthorshipBCEDataset)
         user_masks[: len(image_ids)] = 1.0 # 1 para reales, 0 para padding.
         
         return user_images, user_masks
-
 
 
 # Dataset to train with Contrastive Loss criterion

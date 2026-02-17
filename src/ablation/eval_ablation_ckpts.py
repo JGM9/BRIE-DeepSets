@@ -1,10 +1,4 @@
 from __future__ import annotations
-from pathlib import Path
-import sys
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 import argparse
 import json
@@ -12,19 +6,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import torch
 import pytorch_lightning as pl
+import torch
 from torch import nn
 
+from src.centroids import get_centroid_preds
 from src.datamodule import ImageAuthorshipDataModule, TripadvisorImageAuthorshipBPRDataset
 from src.models.presley import PRESLEY
-from src.centroids import get_centroid_preds
 from src.test import test_tripadvisor_authorship_task
 
+### PHI / RHO BUILDING BLOCKS ###
 
-# =========================
-# φ / ρ building blocks
-# =========================
 def phi_mlp_2ln(d: int) -> nn.Module:
     return nn.Sequential(
         nn.Linear(1536, d),
@@ -52,7 +44,7 @@ def rho_mlp_2ln_dd(d: int) -> nn.Module:
 
 
 def rho_mlp_2ln_1536d(d: int) -> nn.Module:
-    # Para φ=Identity => pooled queda en 1536, ρ debe arrancar en 1536→d
+    # For phi=Identity -> pooled stays in 1536 -> rho must start at 1536
     return nn.Sequential(
         nn.Linear(1536, d),
         nn.ReLU(inplace=True),
@@ -70,10 +62,8 @@ def rho_linear_1536d(d: int) -> nn.Module:
 
 
 def build_variant(variant: str, d: int) -> Tuple[nn.Module, Optional[nn.Module], bool]:
-    """
-    Returns (phi, rho, ds_no_rho)
-    ds_no_rho=True => DeepSetEmbeddingBlock hace skip total de rho.
-    """
+    # Returns (phi, rho, ds_no_rho)
+    # ds_no_rho=True -> DeepSetEmbeddingBlock skips rho completely
     v = variant.lower()
 
     if v in {"baseline", "base"}:
@@ -103,7 +93,10 @@ def build_variant(variant: str, d: int) -> Tuple[nn.Module, Optional[nn.Module],
     raise ValueError(f"Unknown variant: {variant}")
 
 
+### METRICS HELPERS ###
+
 def extract_metric(metrics_dict: Dict[str, Any], model_name: str) -> Dict[str, Optional[float]]:
+    # metrics JSON shape: { "PRESLEY": {...}, "RANDOM": {...}, "CNT": {...} }
     m = metrics_dict.get(model_name, {}) if isinstance(metrics_dict, dict) else {}
 
     def get_any(keys: List[str]) -> Optional[float]:
@@ -116,11 +109,68 @@ def extract_metric(metrics_dict: Dict[str, Any], model_name: str) -> Dict[str, O
         return None
 
     return {
-        "MRecall@10": get_any(["recall@10_10plus", "recall@10"]),
-        "MNDCG@10": get_any(["ndcg@10_10plus", "ndcg@10"]),
-        "MAUC": get_any(["auc_all", "auc", "auc_10plus"]),
+        "MRecall@10": get_any(["recall@10_10plus", "recall@10", "MRecall@10"]),
+        "MNDCG@10": get_any(["ndcg@10_10plus", "ndcg@10", "MNDCG@10"]),
+        "MAUC": get_any(["auc_all", "auc", "auc_10plus", "MAUC"]),
     }
 
+
+### FILE / RUN HELPERS ###
+
+def ensure_repo_root() -> None:
+    # This script assumes you run from repo root (so "src/" exists)
+    if not Path("src").exists():
+        raise RuntimeError("No encuentro 'src/'. Ejecuta este script desde la raíz del repo.")
+
+
+def read_variant_from_run_id(run_id: str) -> str:
+    # Expected run_id: ABL__{variant}__d64__lr...
+    parts = run_id.split("__")
+    if len(parts) < 2 or not parts[1]:
+        raise ValueError(f"No puedo parsear variant desde run_id: {run_id}")
+    return parts[1]
+
+
+def find_ckpt(run_dir: Path) -> Path:
+    ckpt_dir = run_dir / "checkpoints"
+    if not ckpt_dir.exists():
+        raise FileNotFoundError(f"Missing checkpoints dir: {ckpt_dir}")
+
+    # Prefer stable last.ckpt
+    stable = ckpt_dir / "last.ckpt"
+    if stable.exists():
+        return stable
+
+    # Otherwise last*.ckpt (last-v1.ckpt, etc.)
+    cands = sorted(ckpt_dir.glob("last*.ckpt"))
+    if cands:
+        return cands[-1]
+
+    # Last resort: any .ckpt
+    cands = sorted(ckpt_dir.glob("*.ckpt"))
+    if cands:
+        return cands[-1]
+
+    raise FileNotFoundError(f"No checkpoint found in: {ckpt_dir}")
+
+
+def try_read_json(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def pick_hparam(run_cfg: Optional[Dict[str, Any]], key: str, fallback: Any) -> Any:
+    # Read from config.json if present; fallback to CLI defaults
+    if isinstance(run_cfg, dict) and key in run_cfg and run_cfg[key] is not None:
+        return run_cfg[key]
+    return fallback
+
+
+### SAFEARGS (test_tripadvisor_authorship_task expects args-like object) ###
 
 class SafeArgs:
     def __init__(self, **kw):
@@ -130,12 +180,14 @@ class SafeArgs:
         return None
 
 
+### CONFIG ###
+
 @dataclass
 class EvalCfg:
     city: str = "barcelona"
     model: str = "PRESLEY"
 
-    # Deben coincidir con el entrenamiento
+    # Defaults used ONLY if a run_dir has no config.json
     d: int = 64
     lr: float = 1e-3
     dropout: float = 0.4
@@ -148,49 +200,20 @@ class EvalCfg:
     use_train_val: bool = True
     no_validation: bool = True
 
-    # Rutas
     ablation_root: Path = Path("results") / "ablation"
+    force: bool = False
 
 
-def _read_variant_from_run_id(run_id: str) -> str:
-    # run_id esperado: ABL__{variant}__d64__lr...
-    parts = run_id.split("__")
-    if len(parts) < 2 or not parts[1]:
-        raise ValueError(f"Cannot parse variant from run_id: {run_id}")
-    return parts[1]
+### MAIN ###
 
-
-def _find_ckpt(run_dir: Path) -> Path:
-    ckpt_dir = run_dir / "checkpoints"
-    if not ckpt_dir.exists():
-        raise FileNotFoundError(f"Missing checkpoints dir: {ckpt_dir}")
-
-    # Preferimos last.ckpt si existe
-    stable = ckpt_dir / "last.ckpt"
-    if stable.exists():
-        return stable
-
-    # Si no, busca cualquier last*.ckpt (last-v1.ckpt, etc.)
-    cands = sorted(ckpt_dir.glob("last*.ckpt"))
-    if cands:
-        return cands[-1]
-
-    # Último recurso: cualquier .ckpt
-    cands = sorted(ckpt_dir.glob("*.ckpt"))
-    if cands:
-        return cands[-1]
-
-    raise FileNotFoundError(f"No checkpoint found in: {ckpt_dir}")
-
-
-def main():
+def main() -> None:
     torch.set_float32_matmul_precision("high")
 
-    parser = argparse.ArgumentParser(description="Evaluate existing ablation checkpoints (no training).")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--city", type=str, default="barcelona")
     parser.add_argument("--model_name", type=str, default="PRESLEY")
 
-    # Si NO quieres flags, no los uses. Están para casos raros.
+    # Fallback defaults (used only if run_dir/config.json is missing)
     parser.add_argument("--d", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--dropout", type=float, default=0.4)
@@ -208,7 +231,11 @@ def main():
     parser.add_argument("--with_validation", dest="no_validation", action="store_false")
     parser.set_defaults(no_validation=True)
 
+    parser.add_argument("--force", action="store_true", default=False)
+
     args = parser.parse_args()
+
+    ensure_repo_root()
 
     cfg = EvalCfg(
         city=args.city,
@@ -223,6 +250,7 @@ def main():
         use_train_val=args.use_train_val,
         no_validation=args.no_validation,
         ablation_root=Path("results") / "ablation",
+        force=args.force,
     )
 
     # results/ablation/<city>/<model>/
@@ -230,7 +258,6 @@ def main():
     if not root.exists():
         raise FileNotFoundError(f"Ablation root not found: {root}")
 
-    # Encuentra runs ABL__*
     run_dirs = sorted([p for p in root.iterdir() if p.is_dir() and p.name.startswith("ABL__")])
     if not run_dirs:
         raise RuntimeError(f"No ABL__ run dirs found under: {root}")
@@ -238,7 +265,7 @@ def main():
     out_csv = root / "ablation_eval_summary.csv"
     out_json = root / "ablation_eval_summary.json"
 
-    # Carga datamodule UNA VEZ (mismo test set para todos)
+    # One DataModule for all runs (same test set)
     pl.seed_everything(cfg.seed, workers=True)
     dm = ImageAuthorshipDataModule(
         city=cfg.city,
@@ -253,7 +280,7 @@ def main():
     )
     dm.setup()
 
-    # Baselines (una vez)
+    # Baselines (once)
     torch.manual_seed(cfg.seed)
     rnd = torch.mean(torch.rand((len(dm.test_dataset), 10)), dim=1).cpu().numpy()
 
@@ -281,45 +308,55 @@ def main():
     for run_dir in run_dirs:
         run_id = run_dir.name
         metrics_path = run_dir / "test_metrics.json"
+        config_path = run_dir / "config.json"
 
-        # Si ya existe metrics, lo reutilizamos (evita repetir eval)
-        if metrics_path.exists():
-            try:
-                metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        run_cfg = try_read_json(config_path)
+
+        # Per-run hparams (avoid evaluating ckpt with wrong d)
+        run_d = int(pick_hparam(run_cfg, "d", cfg.d))
+        run_lr = float(pick_hparam(run_cfg, "lr", cfg.lr))
+        run_dropout = float(pick_hparam(run_cfg, "dropout", cfg.dropout))
+        run_seed = int(pick_hparam(run_cfg, "seed", cfg.seed))
+
+        # If metrics exist and not forcing, reuse
+        if metrics_path.exists() and (not cfg.force):
+            metrics = try_read_json(metrics_path)
+            if isinstance(metrics, dict):
                 row = {
-                    "variant": _read_variant_from_run_id(run_id),
+                    "variant": read_variant_from_run_id(run_id),
                     "run_id": run_id,
-                    "seed": cfg.seed,
-                    "d": cfg.d,
-                    "lr": cfg.lr,
-                    "dropout": cfg.dropout,
+                    "seed": run_seed,
+                    "d": run_d,
+                    "lr": run_lr,
+                    "dropout": run_dropout,
                     "status": "skipped(existing_metrics)",
                 }
                 row.update(extract_metric(metrics, cfg.model))
                 summary_rows.append(row)
                 continue
-            except Exception:
-                # si está corrupto, reevaluamos
-                pass
 
         try:
-            ckpt_path = _find_ckpt(run_dir)
-            variant = _read_variant_from_run_id(run_id)
+            ckpt_path = find_ckpt(run_dir)
+            variant = read_variant_from_run_id(run_id)
 
-            phi, rho, ds_no_rho = build_variant(variant, cfg.d)
+            phi, rho, ds_no_rho = build_variant(variant, run_d)
 
             model_eval = PRESLEY(
-                d=cfg.d,
+                d=run_d,
                 nusers=1,
-                lr=cfg.lr,
+                lr=run_lr,
                 phi=phi,
                 rho=rho,
-                dropout=cfg.dropout,
+                dropout=run_dropout,
                 ds_no_rho=ds_no_rho,
             )
 
             ckpt_obj = torch.load(ckpt_path, map_location="cpu")
-            state_dict = ckpt_obj["state_dict"] if isinstance(ckpt_obj, dict) and "state_dict" in ckpt_obj else ckpt_obj
+            state_dict = (
+                ckpt_obj["state_dict"]
+                if isinstance(ckpt_obj, dict) and "state_dict" in ckpt_obj
+                else ckpt_obj
+            )
 
             incomp = model_eval.load_state_dict(state_dict, strict=False)
             if incomp.missing_keys or incomp.unexpected_keys:
@@ -346,10 +383,10 @@ def main():
             row = {
                 "variant": variant,
                 "run_id": run_id,
-                "seed": cfg.seed,
-                "d": cfg.d,
-                "lr": cfg.lr,
-                "dropout": cfg.dropout,
+                "seed": run_seed,
+                "d": run_d,
+                "lr": run_lr,
+                "dropout": run_dropout,
                 "ckpt_used": str(ckpt_path),
                 "status": "ok",
             }
@@ -359,21 +396,20 @@ def main():
         except Exception as e:
             summary_rows.append(
                 {
-                    "variant": run_dir.name,
+                    "variant": run_id,
                     "run_id": run_id,
-                    "seed": cfg.seed,
-                    "d": cfg.d,
-                    "lr": cfg.lr,
-                    "dropout": cfg.dropout,
+                    "seed": run_seed,
+                    "d": run_d,
+                    "lr": run_lr,
+                    "dropout": run_dropout,
                     "status": f"FAILED: {type(e).__name__}",
                     "error": str(e),
                 }
             )
 
-        # dump incremental (para no perderlo si peta a mitad)
+        # Incremental dump (safe if you interrupt)
         try:
             import pandas as pd
-
             pd.DataFrame(summary_rows).to_csv(out_csv, index=False, encoding="utf-8")
         except Exception:
             out_json.write_text(json.dumps(summary_rows, indent=2), encoding="utf-8")

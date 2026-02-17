@@ -1,19 +1,25 @@
 import pickle
+from pathlib import Path
 import pandas as pd
 
-# Ruta a tu archivo TRAIN_IMG
-ruta = r"C:\Users\Usuario\Desktop\BRIE-DeepSets\data\barcelona\data_10+10\TRAIN_IMG"
+# Path to TRAIN_IMG file (relative to project root)
+TRAIN_IMG_PATH = Path("data/barcelona/data_10+10/TRAIN_IMG")
 
-# Cargar el dataframe
-df = pickle.load(open(ruta, "rb"))
+# Load dataframe
+with open(TRAIN_IMG_PATH, "rb") as f:
+    df = pickle.load(f)
 
-# Agrupar por usuario y contar cuántas imágenes tiene cada uno
-imagenes_por_usuario = df.groupby("id_user")["id_img"].count()
+# Count number of images per user
+images_per_user = df.groupby("id_user")["id_img"].count()
 
-# Mostrar estadísticas básicas
-print(imagenes_por_usuario.describe())
+# Basic statistics
+print("Images per user statistics:")
+print(images_per_user.describe())
 
-# Opcional: ver cuántos usuarios tienen más de X imágenes
-for limite in [5, 10, 15, 20, 30, 50]:
-    porcentaje = (imagenes_por_usuario > limite).mean() * 100
-    print(f"Usuarios con más de {limite} imágenes: {porcentaje:.2f}%")
+# Percentage of users above different thresholds
+thresholds = [5, 10, 15, 20, 30, 50]
+
+print("\nPercentage of users with more than K images:")
+for k in thresholds:
+    percentage = (images_per_user > k).mean() * 100
+    print(f"K > {k}: {percentage:.2f}%")

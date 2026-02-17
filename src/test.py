@@ -38,6 +38,7 @@ def test_tripadvisor_authorship_task(datamodule, model_preds, args):
     recall_figure_data = {"city": datamodule.city, "metrics": []}
     ndcg_figure_data = {"city": datamodule.city, "metrics": []}
 
+    # Collect summary metrics per model (added for experiment logging)
     results = {}
 
     for model in model_preds:
@@ -45,38 +46,34 @@ def test_tripadvisor_authorship_task(datamodule, model_preds, args):
         print(model)
         print("=" * 50)
 
+        # Copy to avoid in-place modification of original test dataframe
         test_set = datamodule.test_dataset.dataframe.copy()
         test_set["pred"] = model_preds[model]
-        
-        assert len(model_preds[model]) == len(test_set), (model, len(model_preds[model]), len(test_set))
-        print("[SANITY] pred mean/std:", float(test_set["pred"].mean()), float(test_set["pred"].std()))
 
+        # Sanity check: predictions must match test size
+        assert len(model_preds[model]) == len(test_set), (
+            model,
+            len(model_preds[model]),
+            len(test_set),
+        )
+
+        # Basic prediction distribution check (DeepSets debugging)
+        print(
+            "[SANITY] pred mean/std:",
+            float(test_set["pred"].mean()),
+            float(test_set["pred"].std()),
+        )
 
         train_set = datamodule.train_dataset.dataframe
 
-        # Get no. of images in each test case: not the same unique restaurant
-        # images, as a user may have >1 images per restaurant and each test case
-        # only has one of them
-
-        #images_per_testcase = (
-        #    test_set.value_counts("id_test")
-        #    .reset_index()
-        #    .rename(columns={0: "testcase_num_images"})
-        #)
+        # Get no. of images in each test case
         images_per_testcase = (
-            test_set.groupby('id_test')
+            test_set.groupby("id_test")
             .size()
-            .reset_index(name='testcase_num_images')
+            .reset_index(name="testcase_num_images")
         )
 
         # Compute number of photos in each user's train set
-        #train_photos_per_user = (
-        #    train_set[train_set["take"] == 1]
-        #    .drop_duplicates(keep="first")
-        #    .value_counts("id_user")
-        #    .reset_index()
-        #    .rename(columns={0: "author_num_train_photos"})
-        #)
         train_photos_per_user = (
             train_set[train_set["take"] == 1]
             .drop_duplicates(keep="first")
@@ -85,13 +82,14 @@ def test_tripadvisor_authorship_task(datamodule, model_preds, args):
             .reset_index(name="author_num_train_photos")
         )
 
-
-        # # Compute the percentile metric of each test case
+        # Compute the percentile metric of each test case
         test_cases = (
-            test_set.groupby("id_test").apply(get_testcase_rankingmetrics).reset_index()
+            test_set.groupby("id_test")
+            .apply(get_testcase_rankingmetrics)
+            .reset_index()
         )
 
-        # Add the user and subreddit information
+        # Add user-level and test-case-level information
         test_cases = pd.merge(
             test_cases,
             train_photos_per_user,
@@ -118,9 +116,11 @@ def test_tripadvisor_authorship_task(datamodule, model_preds, args):
         preds = torch.tensor(test_set["pred"], dtype=torch.float)
         target = torch.tensor(test_set["is_dev"], dtype=torch.long)
         indexes = torch.tensor(test_set["id_test"], dtype=torch.long)
+
         model_userwise_auroc = UserwiseAUCROC()(
             indexes=indexes, target=target, preds=preds
         )
+
         print("")
         print(f"AUC (all users, all test cases): {model_userwise_auroc:.3f}")
         print("")
@@ -130,25 +130,23 @@ def test_tripadvisor_authorship_task(datamodule, model_preds, args):
         # We only take into account restaurants with >10 photos
         test_cases = test_cases[test_cases["testcase_num_images"] >= 10]
 
-        # Compute percentile figure metrics
         print(f"Min. imgs  Percentile  Test Cases")
         for i in range(1, 101):
-            percentiles = test_cases[test_cases["author_num_train_photos"] >= i][
-                "percentile"
-            ]
+            percentiles = test_cases[
+                test_cases["author_num_train_photos"] >= i
+            ]["percentile"]
 
             model_percentile_metrics["min_photos"].append(i)
             model_percentile_metrics["num_test_cases"].append(len(percentiles))
-            model_percentile_metrics["median_percentile"].append(percentiles.median())
+            model_percentile_metrics["median_percentile"].append(
+                percentiles.median()
+            )
 
-        #     print(f"{i:<11}{percentiles.median():<12.3f}({len(percentiles)})")
         percentile_figure_data["metrics"].append(model_percentile_metrics)
 
-        # For the recall metric, only include users with >= train images
-
+        # For recall metric, only include users with >=10 train images
         test_cases = test_cases[test_cases["author_num_train_photos"] >= 10]
 
-        # Initialize recall table data
         model_recall_metrics = {"k": [], "Recall@10": [], "model_name": model}
         model_ndcg_metrics = {"k": [], "NDCG@10": [], "model_name": model}
 
@@ -159,13 +157,13 @@ def test_tripadvisor_authorship_task(datamodule, model_preds, args):
         preds = torch.tensor(test_set["pred"], dtype=torch.float)
         target = torch.tensor(test_set["is_dev"], dtype=torch.long)
         indexes = torch.tensor(test_set["id_test"], dtype=torch.long)
-        # % of test cases where the image was in position k=1,2,3...10 (Recall at k)
+
         print("k  Recall@10  NDCG@10")
 
         recall_at_10 = None
         ndcg_at_10 = None
 
-        for k in range(1, 10 + 1):
+        for k in range(1, 11):
             recall_k = torchmetrics.RetrievalRecall(k=k)(
                 preds=preds, target=target, indexes=indexes
             )
@@ -184,20 +182,22 @@ def test_tripadvisor_authorship_task(datamodule, model_preds, args):
 
             print(f"{k:<3}{recall_k:<8.3f}{ndcg_k:.3f}")
 
-
         recall_figure_data["metrics"].append(model_recall_metrics)
         ndcg_figure_data["metrics"].append(model_ndcg_metrics)
 
         model_userwise_auroc = UserwiseAUCROC()(
             indexes=indexes, target=target, preds=preds
         )
+
         print("")
         print(
             f"AUC (users with >=10 photos, test cases with size >=10): {model_userwise_auroc:.3f}"
         )
         print("")
+
         auc_10plus = float(model_userwise_auroc)
-        
+
+        # Store summary metrics for external logging (DeepSets experiments)
         results[model] = {
             "auc_all": auc_all,
             "auc_10plus": auc_10plus,
@@ -205,10 +205,6 @@ def test_tripadvisor_authorship_task(datamodule, model_preds, args):
             "ndcg@10_10plus": ndcg_at_10,
         }
 
-
-
-    # figures.retrieval_figure(recall_figure_data, "Recall@10")
-    # figures.retrieval_figure(ndcg_figure_data, "NDCG@10")
     figures.percentile_figure(percentile_figure_data)
-    return results
 
+    return results

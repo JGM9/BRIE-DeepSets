@@ -46,15 +46,9 @@ class PRESLEY(MF_ELVis):
             d,
             phi=phi,
             rho=rho,
-            use_rho=not ds_no_rho,          # <-- CAMBIO AQUÍ
+            use_rho=not ds_no_rho,
             debug_sanity=debug_sanity,
         )
-
-        # print(
-        #     f"[SANITY] DeepSets config | "
-        #     f"use_rho={not ds_no_rho} | "   # <-- CAMBIO AQUÍ
-        # )
-
 
         # Dropouts before dot product
         self.user_dropout = Dropout(dropout)
@@ -77,15 +71,6 @@ class PRESLEY(MF_ELVis):
     def training_step(self, batch, batch_idx):
         user_images, user_masks, pos_images, neg_images = batch
 
-        # if self.debug_sanity and batch_idx == 0:
-        #     print(
-        #         "[SANITY][device check]",
-        #         "user_images:", user_images.device,
-        #         "pos_images:", pos_images.device,
-        #         "neg_images:", neg_images.device,
-        #     )
-
-
         u_embeddings = self.embedding_block.encode_user(user_images, user_masks)
         pos_img_embeddings = self.embedding_block.project_images(pos_images)
         neg_img_embeddings = self.embedding_block.project_images(neg_images)
@@ -106,11 +91,6 @@ class PRESLEY(MF_ELVis):
         neg_preds = torch.sum(u_embeddings * neg_img_embeddings, dim=-1)
 
         diff = pos_preds - neg_preds
-
-        #users, pos_images, neg_images = batch
-
-        #pos_preds = self((users, pos_images), output_logits=True)
-        #neg_preds = self((users, neg_images), output_logits=True)
 
         loss = bpr_loss(pos_preds, neg_preds)
 
@@ -133,10 +113,6 @@ class PRESLEY(MF_ELVis):
         user_images, user_masks, images, targets, id_tests = batch
 
         preds = self((user_images, user_masks, images), output_logits=True)
-
-        #users, images, targets, id_tests = batch  
-        
-        #preds = self((users, images), output_logits=True)
 
         self.val_recall.update(preds, targets.long(), id_tests)
         self.val_auc.update(preds, targets.long(), id_tests)
@@ -234,8 +210,6 @@ class PRESLEY(MF_ELVis):
             if abs(u_std) < 1e-6 or abs(u_norm) < 1e-6:
                 log_lines.append("[WARN] User embeddings collapsing (std or norm ~0).")
 
-            # print("\n".join(log_lines))
-
     def _log_scores(self, pos_preds, neg_preds, diff, user_masks):
         with torch.no_grad():
             diff_mean = diff.mean().item()
@@ -254,14 +228,11 @@ class PRESLEY(MF_ELVis):
             f"[SANITY] sigmoid(neg) mean/min/max: {sig_neg.mean().item():.4f}/{sig_neg.min().item():.4f}/{sig_neg.max().item():.4f}",
             ]
 
-
             mask_sum = user_masks.sum(dim=1)
             if (mask_sum == 0).any():
                 log_lines.append("[WARN] Detected users with mask_sum==0 during score logging.")
             if abs(diff_std) < 1e-6:
                 log_lines.append("[WARN] score diff std ~0; model may not separate positives/negatives.")
-
-            # print("\n".join(log_lines))
 
     def on_after_backward(self):
         if not self.debug_sanity:
@@ -304,6 +275,3 @@ class PRESLEY(MF_ELVis):
                 grad_logs.append(f"[SANITY] grad norm {name}: {norm_val:.6f}")
                 if norm_val < 1e-8:
                     grad_logs.append(f"[WARN] Gradient norm for {name} ~0")
-
-        # print("\n".join(grad_logs))
-        

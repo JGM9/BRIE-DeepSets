@@ -1,7 +1,8 @@
-# 1) Lee el mejor trial del HPO (optimization/leaderboard.csv) por val_auc
-# 2) Para cada ciudad: entrena FINAL con use_train_val + no_validation (sin early stopping)
-# 3) Ejecuta test automático usando el last.ckpt del run final
-# 4) Agrega resultados a results/final_test_results.csv
+# Train and evaluate the best HPO configuration across all cities.
+# The best trial is selected from optimization/leaderboard.csv using val_auc.
+# For each city, a final training is performed with use_train_val + no_validation
+# (no early stopping), followed by automatic test using the generated last.ckpt.
+# Final test metrics are aggregated into results/final_test_results.csv.
 
 from __future__ import annotations
 
@@ -14,9 +15,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 
-# =========================
-# Ajustes
-# =========================
+### SETTINGS ###
 CITIES: List[str] = ["barcelona", "madrid", "gijon", "paris", "london", "newyork"]
 MODEL = "PRESLEY"
 
@@ -28,6 +27,7 @@ LEADERBOARD = Path("optimization") / "leaderboard.csv"
 OUT_CSV = "results/final_test_results.csv"
 
 
+### HELPERS ###
 def _ensure_repo_root() -> None:
     if not Path("main.py").exists():
         raise RuntimeError("No encuentro main.py. Ejecuta este script desde la raíz del repo.")
@@ -36,9 +36,8 @@ def _ensure_repo_root() -> None:
 
 
 def _run(cmd: List[str]) -> None:
-    print("\n" + "=" * 110)
-    print("[RUN]", " ".join(cmd))
-    print("=" * 110)
+    """Run a command and raise if it fails."""
+    print("\n[RUN]", " ".join(cmd))
     proc = subprocess.run(cmd, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"Comando falló (returncode={proc.returncode}).")
@@ -53,7 +52,7 @@ def _load_best_row() -> Dict:
     if "val_auc" not in df.columns:
         raise RuntimeError("El leaderboard no tiene columna 'val_auc' (necesaria para elegir el mejor).")
 
-    # OJO: si hay filas fallidas con NaN, las mandamos al final
+    # NOTE: push failed rows (NaN) to the end
     df = df.sort_values(by=["val_auc"], ascending=False, na_position="last")
 
     best = df.iloc[0].to_dict()
@@ -82,18 +81,27 @@ def _bool_from_any(x, default=False) -> bool:
     return default
 
 
-def _find_run_dir(city: str, d: str, lr: str, dropout: str, batch_size: str, K: str, rho: str, seed: str) -> Path:
+def _find_run_dir(
+    city: str,
+    d: str,
+    lr: str,
+    dropout: str,
+    batch_size: str,
+    K: str,
+    rho: str,
+    seed: str
+) -> Path:
     """
-    Encuentra el run_dir creado por main.py para el entrenamiento FINAL (tv=1, noval=1)
-    sin depender del formato exacto de floats (buscando por partes).
+    Find the FINAL training run_dir created by main.py (tv=1, noval=1).
+
+    We avoid reconstructing run_id from floats (lr/dropout formatting can vary).
+    However, if multiple matches exist, we *prefer* the one that also contains
+    the literal lr/dropout strings (as stored in leaderboard).
     """
     base = Path("results") / city / MODEL
     if not base.exists():
         raise FileNotFoundError(f"No existe {base}. ¿Se llegó a entrenar algo para {city}?")
 
-    # main.py construye run_id con tokens:
-    # d{d}__lr{lr}__do{dropout}__bs{batch_size}__K{K}__tv1__noval1__rho{rho}__seed{seed}
-    # Pero lr/dropout pueden tener formatos distintos. Buscamos por todos los tokens fijos y algunos variables.
     must_have = [
         f"d{d}",
         f"bs{batch_size}",
@@ -104,18 +112,13 @@ def _find_run_dir(city: str, d: str, lr: str, dropout: str, batch_size: str, K: 
         f"seed{seed}",
     ]
 
-    candidates = []
+    candidates: List[Path] = []
     for p in base.iterdir():
-        if not p.is_dir():
-            continue
-        name = p.name
-        if all(tok in name for tok in must_have):
-            # además, intentamos que también contenga lr y dropout tal cual vienen del best row (si coincide)
-            # pero sin exigirlo.
+        if p.is_dir() and all(tok in p.name for tok in must_have):
             candidates.append(p)
 
     if not candidates:
-        # fallback menos estricto: solo por tv/noval/seed
+        # fallback: only by tv/noval/seed
         must_have2 = ["tv1", "noval1", f"seed{seed}"]
         for p in base.iterdir():
             if p.is_dir() and all(tok in p.name for tok in must_have2):
@@ -127,23 +130,33 @@ def _find_run_dir(city: str, d: str, lr: str, dropout: str, batch_size: str, K: 
             f"Esperaba algo con tv1/noval1/seed{seed}."
         )
 
-    # si hay más de uno, nos quedamos con el más reciente
+    # Prefer candidates that also contain the literal lr/dropout tokens (if present)
+    lr_tok = f"lr{lr}"
+    do_tok = f"do{dropout}"
+    preferred = [p for p in candidates if (lr_tok in p.name and do_tok in p.name)]
+    if preferred:
+        candidates = preferred
+
+    # If still multiple, pick most recent
     candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
     return candidates[0]
 
 
 def _extract_metrics_from_test_json(test_json_path: Path) -> Dict[str, Optional[float]]:
     """
-    main.py guarda un dict tipo:
-      { "PRESLEY": { ... métricas ... }, "RANDOM": {...}, ... }
-    Queremos PRESLEY y extraer MRecall@10, MNDCG@10, MAUC (si existen).
+    main.py stores a dict like:
+      { "PRESLEY": { ... metrics ... }, "RANDOM": {...}, ... }
+
+    We extract PRESLEY metrics and normalize keys to:
+      - MRecall@10
+      - MNDCG@10
+      - MAUC
     """
     with open(test_json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    model_block = data.get(MODEL, data)  # por si un día guardas directo sin wrapper
+    model_block = data.get(MODEL, data)  # fallback if stored without wrapper
 
-    # Nombres posibles (por si el test usa otras keys)
     key_map = {
         "MRecall@10": ["MRecall@10", "mrecall@10", "recall@10", "Recall@10"],
         "MNDCG@10": ["MNDCG@10", "mndcg@10", "ndcg@10", "NDCG@10"],
@@ -161,11 +174,12 @@ def _extract_metrics_from_test_json(test_json_path: Path) -> Dict[str, Optional[
     return out
 
 
+### MAIN ###
 def main() -> None:
     _ensure_repo_root()
     best = _load_best_row()
 
-    # IMPORTANTÍSIMO: NO convierto a float para recomponer strings (evita líos con 1e-03 vs 0.001)
+    # IMPORTANT: keep as strings (avoid float formatting issues: 1e-03 vs 0.001)
     d = str(int(best["d"]))
     lr = str(best["lr"])
     dropout = str(best["dropout"])
@@ -182,13 +196,10 @@ def main() -> None:
     print(f"  Cities: {CITIES}")
 
     python_exe = sys.executable
-
     rows = []
 
     for city in CITIES:
-        # -----------------------
-        # 1) TRAIN FINAL
-        # -----------------------
+        ### 1) TRAIN FINAL ###
         train_cmd = [
             python_exe, "main.py",
             "--city", city,
@@ -210,15 +221,15 @@ def main() -> None:
 
         _run(train_cmd)
 
-        # localizar run_dir y checkpoint last.ckpt sin reconstruir run_id a mano
-        run_dir = _find_run_dir(city=city, d=d, lr=lr, dropout=dropout, batch_size=batch_size, K=K, rho=rho, seed=seed)
+        # Find run_dir + last checkpoint without rebuilding run_id manually
+        run_dir = _find_run_dir(
+            city=city, d=d, lr=lr, dropout=dropout, batch_size=batch_size, K=K, rho=rho, seed=seed
+        )
         ckpt_path = run_dir / "checkpoints" / "last.ckpt"
         if not ckpt_path.exists():
             raise FileNotFoundError(f"No encuentro last.ckpt en: {ckpt_path}")
 
-        # -----------------------
-        # 2) TEST
-        # -----------------------
+        ### 2) TEST ###
         test_cmd = [
             python_exe, "main.py",
             "--city", city,
@@ -240,9 +251,7 @@ def main() -> None:
 
         _run(test_cmd)
 
-        # -----------------------
-        # 3) Parse metrics
-        # -----------------------
+        ### 3) PARSE METRICS ###
         test_json = run_dir / "test_metrics.json"
         if not test_json.exists():
             raise FileNotFoundError(f"No encuentro test_metrics.json en: {test_json}")
@@ -264,11 +273,10 @@ def main() -> None:
         }
         rows.append(row)
 
-        # guardar progreso incremental por si paras a mitad
+        # incremental save (so you can stop mid-way without losing everything)
         pd.DataFrame(rows).to_csv(OUT_CSV, index=False)
         print(f"[OK] guardado parcial: {OUT_CSV}")
 
-    # final
     df = pd.DataFrame(rows)
     df.to_csv(OUT_CSV, index=False)
     print("\n[DONE] Resultados finales guardados en:", OUT_CSV)

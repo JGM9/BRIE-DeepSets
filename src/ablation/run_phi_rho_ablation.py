@@ -9,23 +9,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import torch
 import pytorch_lightning as pl
-from torch import nn
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
+import torch
+from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
+from torch import nn
 
-from src.datamodule import ImageAuthorshipDataModule, TripadvisorImageAuthorshipBPRDataset
-from src.models.presley import PRESLEY
 from src.callbacks import EmissionsTrackerCallback
 from src.centroids import get_centroid_preds
+from src.datamodule import ImageAuthorshipDataModule, TripadvisorImageAuthorshipBPRDataset
+from src.models.presley import PRESLEY
 from src.test import test_tripadvisor_authorship_task
 
 
-# =========================
-# φ / ρ building blocks
-# =========================
+### Phi / Rho BUILDING BLOCKS ###
+
 def phi_mlp_2ln(d: int) -> nn.Module:
+    # 1536 -> d (MLP) + LayerNorm
     return nn.Sequential(
         nn.Linear(1536, d),
         nn.ReLU(inplace=True),
@@ -35,14 +35,17 @@ def phi_mlp_2ln(d: int) -> nn.Module:
 
 
 def phi_linear(d: int) -> nn.Module:
+    # 1536 -> d (linear)
     return nn.Linear(1536, d)
 
 
 def phi_identity() -> nn.Module:
+    # identity: keeps 1536
     return nn.Identity()
 
 
 def rho_mlp_2ln_dd(d: int) -> nn.Module:
+    # d -> d (MLP) + LayerNorm
     return nn.Sequential(
         nn.Linear(d, d),
         nn.ReLU(inplace=True),
@@ -52,7 +55,7 @@ def rho_mlp_2ln_dd(d: int) -> nn.Module:
 
 
 def rho_mlp_2ln_1536d(d: int) -> nn.Module:
-    # Para φ=Identity => pooled queda en 1536, ρ debe arrancar en 1536→d
+    # for phi=Identity: pooled is 1536 -> rho must start at 1536
     return nn.Sequential(
         nn.Linear(1536, d),
         nn.ReLU(inplace=True),
@@ -70,10 +73,8 @@ def rho_linear_1536d(d: int) -> nn.Module:
 
 
 def build_variant(variant: str, d: int) -> Tuple[nn.Module, Optional[nn.Module], bool]:
-    """
-    Returns (phi, rho, ds_no_rho)
-    ds_no_rho=True => DeepSetEmbeddingBlock hace skip total de rho.
-    """
+    # returns (phi, rho, ds_no_rho)
+    # ds_no_rho=True -> DeepSetEmbeddingBlock skips rho completely
     v = variant.lower()
 
     if v in {"baseline", "base"}:
@@ -104,7 +105,7 @@ def build_variant(variant: str, d: int) -> Tuple[nn.Module, Optional[nn.Module],
 
 
 def sanity_check_shapes(phi: nn.Module, rho: Optional[nn.Module], use_rho: bool, d: int, k: int) -> None:
-    # Check rápido para evitar mismatches evidentes
+    # quick shape check to catch obvious mismatches (before training)
     with torch.no_grad():
         user_images = torch.zeros(2, k, 1536)
         user_masks = torch.ones(2, k)
@@ -121,6 +122,7 @@ def sanity_check_shapes(phi: nn.Module, rho: Optional[nn.Module], use_rho: bool,
 
 
 def _copy_ckpt(src_path: str, dst_path: Path) -> Path:
+    # make checkpoint name stable (Lightning may write last.ckpt / last-v1.ckpt)
     if not src_path:
         raise FileNotFoundError("Lightning did not provide a checkpoint path (empty).")
     sp = Path(src_path)
@@ -132,6 +134,7 @@ def _copy_ckpt(src_path: str, dst_path: Path) -> Path:
 
 
 def extract_metric(metrics_dict: Dict[str, Any], model_name: str) -> Dict[str, Optional[float]]:
+    # metrics JSON shape: { "PRESLEY": {...}, "RANDOM": {...}, ... }
     m = metrics_dict.get(model_name, {}) if isinstance(metrics_dict, dict) else {}
 
     def get_any(keys: List[str]) -> Optional[float]:
@@ -158,13 +161,13 @@ class RunCfg:
     max_user_images: int = 20
     workers: int = 0
 
-    # Ablación: TRAIN/DEV conjunto + sin validación interna
+    # Ablation defaults: TRAIN_DEV + no internal validation
     use_train_val: bool = True
     no_validation: bool = True
 
     max_epochs: int = 75
 
-    # Solo si activases validación
+    # only used if validation is enabled
     patience: int = 10
     min_delta: float = 1e-4
 
@@ -175,16 +178,17 @@ class RunCfg:
     limit_test_batches: Optional[int] = None
 
 
-def main():
+def main() -> None:
     torch.set_float32_matmul_precision("high")
 
     parser = argparse.ArgumentParser()
 
-    # Best HPs (default)
+    ### Best HPs (defaults) ###
     parser.add_argument("--d", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--dropout", type=float, default=0.4)
 
+    ### Data / runtime ###
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--city", type=str, default="barcelona")
     parser.add_argument("--model_name", type=str, default="PRESLEY")
@@ -193,7 +197,7 @@ def main():
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--max_epochs", type=int, default=75)
 
-    # Defaults como quieres: TRAIN/DEV + no_validation
+    ### Defaults: TRAIN_DEV + no_validation ###
     parser.add_argument("--use_train_val", dest="use_train_val", action="store_true")
     parser.add_argument("--no_use_train_val", dest="use_train_val", action="store_false")
     parser.set_defaults(use_train_val=True)
@@ -210,13 +214,14 @@ def main():
     parser.add_argument("--limit_val_batches", type=int, default=None)
     parser.add_argument("--limit_test_batches", type=int, default=None)
 
-    # Por defecto EXCLUYE baseline (porque ya lo tienes)
+    # Default excludes baseline (since you already have it)
     parser.add_argument(
         "--variants",
         type=str,
         default="phi_simple,rho_simple,both_simple,no_rho,no_phi,no_rho_phi_simple,no_phi_rho_simple",
     )
 
+    # resume: enabled by default unless --no_resume is passed
     parser.add_argument("--resume", action="store_true", default=True)
     parser.add_argument("--no_resume", action="store_true", default=False)
 
@@ -245,11 +250,9 @@ def main():
     if not variants:
         raise ValueError("No variants provided.")
 
-    # >>> Carpeta como pides:
-    # results/ablation/<city>/<model>/...
+    ### Output layout ###
     ablation_root = Path("results") / "ablation" / cfg.city / cfg.model
     ablation_root.mkdir(parents=True, exist_ok=True)
-
 
     out_csv = ablation_root / "ablation_summary.csv"
     out_json = ablation_root / "ablation_summary.json"
@@ -257,7 +260,6 @@ def main():
     summary_rows: List[Dict[str, Any]] = []
 
     for variant in variants:
-        # Misma seed para TODAS las variantes => comparabilidad
         pl.seed_everything(cfg.seed, workers=True)
 
         phi, rho, ds_no_rho = build_variant(variant, args.d)
@@ -271,6 +273,7 @@ def main():
             f"__tv{int(cfg.use_train_val)}__noval{int(cfg.no_validation)}"
             f"__rho{int(use_rho)}__seed{cfg.seed}"
         )
+
         run_dir = ablation_root / run_id
         ckpt_dir = run_dir / "checkpoints"
         ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -278,9 +281,11 @@ def main():
         metrics_path = run_dir / "test_metrics.json"
         failed_flag = run_dir / "_FAILED.txt"
 
+        ### Resume ###
         if resume and metrics_path.exists():
             with open(metrics_path, "r", encoding="utf-8") as f:
                 metrics = json.load(f)
+
             row = {
                 "variant": variant,
                 "run_id": run_id,
@@ -288,7 +293,7 @@ def main():
                 "d": args.d,
                 "lr": args.lr,
                 "dropout": args.dropout,
-                "phi_cfg": variant,  # placeholder (luego en memoria pones columnas)
+                "phi_cfg": variant,
                 "rho_cfg": variant,
                 "use_rho": int(use_rho),
                 "status": "skipped(existing)",
@@ -307,6 +312,7 @@ def main():
         if failed_flag.exists():
             failed_flag.unlink(missing_ok=True)
 
+        ### Persist config ###
         cfg_dump = {
             "variant": variant,
             "city": cfg.city,
@@ -329,12 +335,14 @@ def main():
             "limit_val_batches": cfg.limit_val_batches,
             "limit_test_batches": cfg.limit_test_batches,
         }
+        run_dir.mkdir(parents=True, exist_ok=True)
         with open(run_dir / "config.json", "w", encoding="utf-8") as f:
             json.dump(cfg_dump, f, indent=2)
 
         t0 = time.time()
 
         try:
+            ### DataModule ###
             dm = ImageAuthorshipDataModule(
                 city=cfg.city,
                 batch_size=cfg.batch_size,
@@ -348,13 +356,11 @@ def main():
             )
             dm.setup()
 
+            ### Logger / callbacks ###
             logger = TensorBoardLogger(save_dir=str(run_dir / "tb"), name="", version="")
-
             callbacks: List[Any] = []
 
             if cfg.no_validation:
-                # >>> LO QUE TE IMPORTA:
-                # Guardar SIEMPRE "last"
                 ckpt_cb = ModelCheckpoint(
                     dirpath=str(ckpt_dir),
                     save_last=True,
@@ -403,6 +409,7 @@ def main():
 
             trainer = pl.Trainer(**trainer_kwargs)
 
+            ### Train ###
             model = PRESLEY(
                 d=args.d,
                 nusers=1,
@@ -412,21 +419,14 @@ def main():
                 dropout=args.dropout,
                 ds_no_rho=ds_no_rho,
             )
-
             trainer.fit(model=model, datamodule=dm)
 
-            # =========================
-            # CHECKPOINT (no_validation)
-            # =========================
-            # Lightning puede dejarlo como last.ckpt o last-v1.ckpt. No nos fiamos del nombre.
-            # Cogemos el path REAL y lo copiamos a checkpoints/last.ckpt (estable).
+            ### Stable checkpoint path ###
             last_real = getattr(ckpt_cb, "last_model_path", "")
             stable_last = ckpt_dir / "last.ckpt"
             ckpt_path = _copy_ckpt(last_real, stable_last)
 
-            # =========================
-            # EVAL (cargar last.ckpt)
-            # =========================
+            ### Eval: reload same variant ###
             phi2, rho2, ds_no_rho2 = build_variant(variant, args.d)
             model_eval = PRESLEY(
                 d=args.d,
@@ -461,18 +461,14 @@ def main():
                 raise RuntimeError("predict() returned empty outputs.")
             test_preds = torch.cat([p.detach().cpu() for p in preds_list], dim=0).numpy()
 
-            # Baselines reproducibles
+            ### Baselines ###
             torch.manual_seed(cfg.seed)
             rnd = torch.mean(torch.rand((len(dm.test_dataset), 10)), dim=1).cpu().numpy()
 
             cnt = get_centroid_preds(dm)
             cnt = cnt.cpu().numpy() if torch.is_tensor(cnt) else cnt
 
-            models_preds = {
-                cfg.model: test_preds,
-                "RANDOM": rnd,
-                "CNT": cnt,
-            }
+            models_preds = {cfg.model: test_preds, "RANDOM": rnd, "CNT": cnt}
 
             class SafeArgs:
                 def __init__(self, **kw):
@@ -491,7 +487,6 @@ def main():
             )
 
             metrics = test_tripadvisor_authorship_task(dm, models_preds, test_args)
-
             with open(metrics_path, "w", encoding="utf-8") as f:
                 json.dump(metrics, f, indent=2)
 
@@ -540,7 +535,6 @@ def main():
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        # Dump incremental
         try:
             import pandas as pd
             pd.DataFrame(summary_rows).to_csv(out_csv, index=False, encoding="utf-8")

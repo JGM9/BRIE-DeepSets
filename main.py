@@ -15,7 +15,6 @@ from src.centroids import get_centroid_preds
 from src.config import read_args
 from src.datamodule import ImageAuthorshipDataModule
 from src.test import test_tripadvisor_authorship_task
-
 from src.callbacks import EmissionsTrackerCallback
 
 from pathlib import Path
@@ -38,7 +37,7 @@ if __name__ == "__main__":
 
     use_tv = bool(getattr(args, "use_train_val", False))
     no_val = bool(getattr(args, "no_validation", False))
-    use_rho = not bool(getattr(args, "ds_no_rho", False))   # por si ds_no_rho también viene None
+    use_rho = not bool(getattr(args, "ds_no_rho", False))
 
     run_id = (
         f"d{args.d}__lr{args.lr}__do{args.dropout}__bs{args.batch_size}"
@@ -50,15 +49,10 @@ if __name__ == "__main__":
     run_dir = Path("runs") / args.city / model0 / run_id
     (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
-    # TensorBoard logger (siempre)
     logger = TensorBoardLogger(save_dir=str(run_dir / "tb"), name="", version="")
 
-    # Guarda config del run
     with open(run_dir / "config.json", "w", encoding="utf-8") as f:
         json.dump(vars(args), f, indent=2)
-
-    # print(f"[RUN] {run_dir}")
-
 
     val_metric_name = (
         "val_loss" if args.model[0] not in ["PRESLEY", "COLLEI"] else "val_auc"
@@ -81,14 +75,18 @@ if __name__ == "__main__":
 
     # Initialize trainer
     if (not args.early_stopping) or args.no_validation:
+
         checkpointing = ModelCheckpoint(
             save_last=True,
             save_top_k=0,
             dirpath=str(run_dir / "checkpoints"),
             save_on_train_epoch_end=True,
         )
+
         callbacks = [checkpointing]
+
     else:
+
         early_stopping = EarlyStopping(
             monitor=val_metric_name,
             mode=val_metric_mode,
@@ -96,6 +94,7 @@ if __name__ == "__main__":
             patience=10,
             check_on_train_epoch_end=False,
         )
+
         checkpointing = ModelCheckpoint(
             save_top_k=1,
             monitor=val_metric_name,
@@ -104,15 +103,15 @@ if __name__ == "__main__":
             filename="best",
             save_on_train_epoch_end=False,
         )
-        callbacks = [checkpointing, early_stopping]
 
+        callbacks = [checkpointing, early_stopping]
 
     callbacks.append(EmissionsTrackerCallback(log_to_trainer=True))
     callbacks.append(LearningRateMonitor(logging_interval="step"))
 
-
     # Optional CSV logging
     if args.log_to_csv:
+
         logger = pl.loggers.CSVLogger(
             name=city,
             version=f'{args.model[0]}{"_no_val" if args.no_validation else ""}{"_"+ args.logdir_name if args.logdir_name else ""}',
@@ -135,8 +134,10 @@ if __name__ == "__main__":
 
     if args.limit_train_batches is not None:
         trainer_kwargs["limit_train_batches"] = args.limit_train_batches
+
     if args.limit_val_batches is not None:
         trainer_kwargs["limit_val_batches"] = args.limit_val_batches
+
     if args.limit_test_batches is not None:
         trainer_kwargs["limit_test_batches"] = args.limit_test_batches
 
@@ -144,26 +145,24 @@ if __name__ == "__main__":
 
     ### TRAIN MODE ###
     if args.stage == "train":
+
         dm.setup()
         model_name = args.model[0]
         model = utils.get_model(model_name, vars(args), dm.nusers)
 
-        # Entrena SIEMPRE; si no_validation, Lightning simplemente no usará val si tu dm no lo da / o si limit_val_batches=0
         trainer.fit(model=model, datamodule=dm)
-
 
     ### HYPERPARAMETER TUNING MODE ###
     if args.stage == "tune":
+
         model_name = args.model[0]
 
-        # Search space
         config = {
             "lr": 1e-3,
             "d": tune.choice([64, 128, 256, 512, 1024]),
             "dropout": tune.choice([0.5, 0.6, 0.7, 0.8, 0.9]),
         }
 
-        # Report callback
         tunecallback = TuneReportCallback(
             metrics={
                 "val_auc": "val_auc",
@@ -173,11 +172,10 @@ if __name__ == "__main__":
             on=["validation_end", "train_end"],
         )
 
-        # Command line reporter
         reporter = CLIReporter(parameter_columns=["d", "lr", "dropout"])
 
-        # Basic function to train each one
         def train_config(config, datamodule=None):
+
             logger = pl.loggers.CSVLogger(
                 name=city + "_tune/" + args.model[0],
                 version="d_"
@@ -197,20 +195,20 @@ if __name__ == "__main__":
                 enable_progress_bar=False,
                 logger=logger,
             )
+
             model = utils.get_model(model_name, config, nusers=datamodule.nusers)
+
             trainer.fit(
                 model,
                 train_dataloaders=datamodule.train_dataloader(),
                 val_dataloaders=datamodule.val_dataloader(),
             )
-            # Guardar la ruta del last.ckpt del run
+
             ckpt_last = run_dir / "checkpoints" / "last.ckpt"
             if ckpt_last.exists():
                 with open(run_dir / "ckpt_path.txt", "w", encoding="utf-8") as f:
                     f.write(str(ckpt_last))
 
-
-        # Execute analysis
         analysis = tune.run(
             tune.with_parameters(train_config, datamodule=dm),
             resources_per_trial={"cpu": 16, "gpu": 1},
@@ -221,10 +219,10 @@ if __name__ == "__main__":
             name=f"tune_{model_name}",
         )
 
-        # Find best configuration and its best val metric value
         best_config = analysis.get_best_config(
             metric=val_metric_name, scope="all", mode=val_metric_mode
         )
+
         best_val_loss = analysis.dataframe(
             metric=val_metric_name, mode=val_metric_mode
         )[val_metric_name].max()
@@ -233,19 +231,20 @@ if __name__ == "__main__":
 
     ### TEST/COMPARISON MODE ###
     elif args.stage == "test":
-        # Holds predictions of each model to test
+
         models_preds = {}
 
         filename = "last" if args.no_validation else "best-model"
 
-        # Obtain predictions of each trained model
         for model_name in args.model:
+
             if args.ckpt_path:
                 ckpt_path = Path(args.ckpt_path)
-                run_dir = ckpt_path.resolve().parents[1]  # .../checkpoints -> run_dir
+                run_dir = ckpt_path.resolve().parents[1]
             else:
                 ckpt_best = run_dir / "checkpoints" / "best.ckpt"
                 ckpt_last = run_dir / "checkpoints" / "last.ckpt"
+
                 if args.no_validation:
                     ckpt_path = ckpt_last
                 else:
@@ -254,18 +253,14 @@ if __name__ == "__main__":
             if not ckpt_path.exists():
                 raise FileNotFoundError(f"[TEST] checkpoint not found: {ckpt_path}")
 
-            # print(f"[TEST] Loading checkpoint: {ckpt_path}")
             nusers_for_model = 1 if model_name in ["PRESLEY", "COLLEI"] else None
             model = utils.get_model(model_name, vars(args), nusers_for_model)
-
 
             ckpt = torch.load(ckpt_path, map_location="cpu")
             state_dict = ckpt["state_dict"] if isinstance(ckpt, dict) and "state_dict" in ckpt else ckpt
 
             incomp = model.load_state_dict(state_dict, strict=False)
             if incomp.missing_keys or incomp.unexpected_keys:
-                # print("Missing keys:", incomp.missing_keys)
-                # print("Unexpected keys:", incomp.unexpected_keys)
                 raise RuntimeError("Checkpoint incompatible con el modelo actual")
 
             model.eval()
@@ -274,7 +269,6 @@ if __name__ == "__main__":
 
             models_preds[model_name] = test_preds
 
-        # Obtain random predictions for baseline comparison
         models_preds["RANDOM"] = (
             torch.mean(torch.rand((len(dm.test_dataset), 10)), dim=1).cpu().numpy()
         )
@@ -292,4 +286,3 @@ if __name__ == "__main__":
                 for k, v in m.items():
                     if v is not None:
                         trainer.logger.experiment.add_scalar(f"test/{model_name}/{k}", float(v), 0)
-

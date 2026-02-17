@@ -44,20 +44,3 @@ def get_dataset_constructor(model_name):
     elif model_name in ['PRESLEY']:
         dataset = TripadvisorImageAuthorshipBPRDataset
     return dataset
-
-
-import torch
-
-def count_trainable_params(model):
-    """
-    Count number of trainable parameters in a PyTorch model.
-    """
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-
-def estimate_model_size_mb(model, bytes_per_param=4):
-    """
-    Estimate model size in MB assuming float32 parameters by default.
-    """
-    n_params = count_trainable_params(model)
-    return n_params * bytes_per_param / (1024 ** 2)

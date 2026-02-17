@@ -1,6 +1,9 @@
 from pytorch_lightning.callbacks import Callback
 
+
 class EmissionsTrackerCallback(Callback):
+    # Lightning callback for tracking training emissions using CodeCarbon
+
     def __init__(self, log_to_trainer: bool = True):
         super().__init__()
         from codecarbon import EmissionsTracker
@@ -8,9 +11,11 @@ class EmissionsTrackerCallback(Callback):
         self.log_to_trainer = log_to_trainer
 
     def on_fit_start(self, trainer, pl_module):
+        # Start emissions tracking at beginning of training
         self.tracker.start()
 
     def on_train_epoch_end(self, trainer, pl_module):
+        # Flush and log per-epoch emissions
         self.tracker.flush()
         data = self.tracker._prepare_emissions_data()
         emissions_g = data.emissions * 1000
@@ -21,6 +26,7 @@ class EmissionsTrackerCallback(Callback):
             pl_module.log("training_time_s", elapsed_s, on_epoch=True, prog_bar=False)
 
     def on_fit_end(self, trainer, pl_module):
+        # Stop tracking and print total emissions
         self.tracker.stop()
         data = self.tracker._prepare_emissions_data()
         total_g   = data.emissions * 1000
