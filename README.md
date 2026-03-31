@@ -5,7 +5,7 @@ Jorge Paz-Ruza, Amparo Alonso-Betanzos
 Berta Guijarro-Berdiñas, Brais Cancela, Carlos Eiras-Franco  
 
 **Extension and implementation:**  
-**Jorge García Mateo**
+**Jorge G. Mateo**
 
 ---
 
