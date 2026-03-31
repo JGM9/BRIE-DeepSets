@@ -1,4 +1,4 @@
-# BRIE-DeepSets: Scalable User Representation with Deep Sets for Visual Explainability
+# BRIE-DeepSets: Scalable Set-Based User Modeling for Visual Explainability in Recommender Systems
 
 **Authors (original BRIE):**  
 Jorge Paz-Ruza, Amparo Alonso-Betanzos  
